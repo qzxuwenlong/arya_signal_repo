@@ -5,13 +5,14 @@ def test_select_alert_candidates_prefers_actionable_non_exit_states():
     candidates = [
         {'symbol': 'BTC', 'state': 'GRID_ALLOWED', 'score': 15, 'local_history_ready': True},
         {'symbol': 'BOME', 'state': 'SQUEEZE_ACTIVE', 'score': 70, 'local_history_ready': True},
+        {'symbol': 'WIF', 'state': 'SHORT_ALERT', 'score': 68, 'local_history_ready': True},
         {'symbol': 'DOGE', 'state': 'EXIT_RISK', 'score': 90, 'local_history_ready': True},
         {'symbol': 'SOL', 'state': 'TREND_ALERT', 'score': 55, 'local_history_ready': False},
     ]
 
     selected = select_alert_candidates(candidates, min_score=50)
 
-    assert [c['symbol'] for c in selected] == ['BOME']
+    assert [c['symbol'] for c in selected] == ['BOME', 'WIF']
 
 
 def test_select_alert_candidates_can_report_exit_risk_when_severe():

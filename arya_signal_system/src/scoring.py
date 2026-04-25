@@ -52,7 +52,7 @@ def classify_signal(candidate: Dict[str, Any]) -> Dict[str, Any]:
         if short_liq > long_liq * 2 and price >= 0:
             return {'state': 'SQUEEZE_ACTIVE', 'direction': '偏多', 'strategy': '趋势/爆空', 'allow_trade': False}
         if long_liq > short_liq * 2 and price <= 0:
-            return {'state': 'SQUEEZE_ACTIVE', 'direction': '偏空', 'strategy': '趋势/爆多', 'allow_trade': False}
+            return {'state': 'SHORT_ALERT', 'direction': '偏空', 'strategy': '做空/瀑布', 'allow_trade': False}
         return {'state': 'TREND_ALERT', 'direction': '待确认', 'strategy': '趋势观察', 'allow_trade': False}
 
     if depth >= 100_000 and spread <= 0.10 and abs(price) <= 3 and abs(funding) <= 0.03 and oi <= 12:
@@ -99,7 +99,7 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         if short_liq > long_liq * 2:
             reasons.append('空头爆仓显著，爆空结构被验证')
         elif long_liq > short_liq * 2:
-            reasons.append('多头爆仓显著，爆多/砸盘结构被验证')
+            reasons.append('多头爆仓显著，做空/砸盘结构被验证')
         else:
             reasons.append('爆仓金额放大，验证对手盘活跃')
     elif oi >= 25:
@@ -124,7 +124,7 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         risks.append('Top10 持仓过度集中')
 
     cls = classify_signal(c)
-    if cls['state'] == 'SQUEEZE_ACTIVE':
+    if cls['state'] in {'SQUEEZE_ACTIVE', 'SHORT_ALERT'}:
         score += 10
     elif cls['state'] in {'EXIT_RISK', 'OI_FAKE_SUSPECT'}:
         score = min(score, 45)

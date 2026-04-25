@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-ACTIONABLE_STATES = {'SQUEEZE_ACTIVE', 'TREND_ALERT'}
+ACTIONABLE_STATES = {'SQUEEZE_ACTIVE', 'SHORT_ALERT', 'TREND_ALERT'}
 SEVERE_EXIT_RISK_KEYWORDS = ('资金费率极端', '收网风险', '熔断', '退出')
 
 

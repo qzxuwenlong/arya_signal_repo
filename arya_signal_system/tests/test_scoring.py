@@ -33,6 +33,29 @@ def test_squeeze_active_scores_high_when_oi_liquidation_and_hype_align():
     assert any('爆空' in r or '空头爆仓' in r for r in scored['reasons'])
 
 
+def test_short_alert_when_downtrend_oi_volume_and_long_liquidation_align():
+    candidate = {
+        'symbol': 'SHORTME',
+        'price_change_1h_pct': -6.0,
+        'volume_change_1h_pct': 120.0,
+        'oi_change_1h_pct': 28.0,
+        'funding_rate_pct': 0.022,
+        'long_liq_1h_usd': 260000,
+        'short_liq_1h_usd': 30000,
+        'depth_usd': 320000,
+        'spread_pct': 0.04,
+        'binance_hype_rank': 12,
+    }
+
+    scored = score_candidate(candidate)
+
+    assert scored['score'] >= 70
+    assert scored['state'] == 'SHORT_ALERT'
+    assert scored['direction'] == '偏空'
+    assert scored['strategy'] == '做空/瀑布'
+    assert any('做空' in r or '多头爆仓' in r for r in scored['reasons'])
+
+
 def test_grid_allowed_when_volatility_and_depth_ok_but_no_squeeze():
     candidate = {
         'symbol': 'RANGE',
