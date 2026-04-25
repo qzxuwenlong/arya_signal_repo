@@ -9,6 +9,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from .historical_metrics import compute_candle_metrics
+
 USER_AGENT = 'arya-signal-system/1.0 (Hermes)'
 
 
@@ -173,6 +175,8 @@ def build_okx_candidate_from_payloads(
     book: Dict[str, Any],
     oi: Dict[str, Any],
     funding: Dict[str, Any],
+    candles_4h: Optional[List[list]] = None,
+    candles_1d: Optional[List[list]] = None,
 ) -> Dict[str, Any]:
     depth, spread = _depth_and_spread(book)
 
@@ -197,7 +201,7 @@ def build_okx_candidate_from_payloads(
         if prev_vol:
             volume_change = (cur_vol - prev_vol) / prev_vol * 100
 
-    return {
+    candidate = {
         'symbol': inst_id,
         'inst_id': inst_id,
         'price': _f(ticker.get('last')),
@@ -213,15 +217,25 @@ def build_okx_candidate_from_payloads(
         'open_interest_usd': _f(oi.get('oiUsd')),
         'sources': ['okx'],
     }
+    hist_metrics = compute_candle_metrics(candles, candles_4h or [], candles_1d or [])
+    if hist_metrics:
+        candidate.update(hist_metrics)
+        candidate['price_change_1h_pct'] = hist_metrics.get('return_1h_pct', candidate['price_change_1h_pct'])
+        candidate['volume_1h'] = hist_metrics.get('volume_usd_1h', candidate['volume_1h'])
+        candidate['volume_change_1h_pct'] = hist_metrics.get('volume_1h_vs_24h_avg_pct', candidate['volume_change_1h_pct'])
+        candidate['sources'].append('okx_historical_candles')
+    return candidate
 
 
 def build_okx_candidate(inst_id: str) -> Dict[str, Any]:
     ticker = fetch_okx_ticker(inst_id)
-    candles = fetch_okx_candles(inst_id)
+    candles = fetch_okx_candles(inst_id, bar='1H', limit=24)
+    candles_4h = fetch_okx_candles(inst_id, bar='4H', limit=12)
+    candles_1d = fetch_okx_candles(inst_id, bar='1D', limit=7)
     book = fetch_okx_books(inst_id)
     oi = fetch_okx_open_interest(inst_id)
     funding = fetch_okx_funding(inst_id)
-    return build_okx_candidate_from_payloads(inst_id, ticker, candles, book, oi, funding)
+    return build_okx_candidate_from_payloads(inst_id, ticker, candles, book, oi, funding, candles_4h, candles_1d)
 
 
 def fetch_binance_rank(chain_id: str = '56', size: int = 30) -> SourceResult:
