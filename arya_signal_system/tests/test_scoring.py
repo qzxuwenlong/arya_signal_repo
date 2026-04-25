@@ -1,7 +1,13 @@
 import json
 from pathlib import Path
 
-from src.scoring import classify_signal, score_candidate, normalize_symbol
+from src.scoring import (
+    classify_signal,
+    score_candidate,
+    normalize_symbol,
+    assess_funding_quality,
+    detect_guillotine_candle_risk,
+)
 from src.report import render_markdown_report
 
 
@@ -165,6 +171,109 @@ def test_exit_risk_when_funding_extreme_and_oi_fake_suspected():
     scored = score_candidate(candidate)
     assert scored['state'] in {'EXIT_RISK', 'OI_FAKE_SUSPECT'}
     assert scored['allow_trade'] is False
+
+
+
+def test_funding_quality_requires_negative_funding_oi_growth_and_price_resilience():
+    good = assess_funding_quality({
+        'funding_rate_pct': -0.045,
+        'oi_change_1h_pct': 24.0,
+        'price_change_1h_pct': 1.8,
+        'volume_change_1h_pct': 90.0,
+        'signal_persistence_count': 3,
+    })
+    assert good['funding_quality'] == 'negative_confirmed_long_fuel'
+    assert good['funding_quality_score'] >= 20
+    assert any('负费率' in r and 'OI' in r for r in good['reasons'])
+
+    trap = assess_funding_quality({
+        'funding_rate_pct': -0.05,
+        'oi_change_1h_pct': -12.0,
+        'price_change_1h_pct': -8.0,
+        'volume_change_1h_pct': 20.0,
+        'signal_persistence_count': 1,
+    })
+    assert trap['funding_quality'] == 'negative_funding_trap'
+    assert trap['funding_quality_score'] <= -20
+    assert any('诱多' in r or '猎杀' in r for r in trap['risks'])
+
+
+def test_score_candidate_downgrades_negative_funding_without_oi_confirmation():
+    candidate = {
+        'symbol': 'CHIP',
+        'price_change_1h_pct': -7.5,
+        'volume_change_1h_pct': 15.0,
+        'oi_change_1h_pct': -10.0,
+        'funding_rate_pct': -0.05,
+        'long_liq_1h_usd': 6000,
+        'short_liq_1h_usd': 9000,
+        'depth_usd': 220000,
+        'spread_pct': 0.04,
+        'signal_persistence_count': 1,
+    }
+
+    scored = score_candidate(candidate)
+
+    assert scored['funding_quality'] == 'negative_funding_trap'
+    assert scored['state'] == 'NO_CHASE_NEGATIVE_FUNDING'
+    assert scored['score'] <= 45
+    assert any('负费率' in r for r in scored['risks'])
+
+
+def test_signal_persistence_rewards_repeated_confirmed_monitor_hits():
+    scored = score_candidate({
+        'symbol': 'KAT',
+        'price_change_1h_pct': 2.4,
+        'volume_change_1h_pct': 80.0,
+        'oi_change_1h_pct': 22.0,
+        'funding_rate_pct': -0.035,
+        'long_liq_1h_usd': 20000,
+        'short_liq_1h_usd': 45000,
+        'depth_usd': 300000,
+        'spread_pct': 0.04,
+        'signal_persistence_count': 4,
+    })
+
+    assert scored['funding_quality'] == 'negative_confirmed_long_fuel'
+    assert scored['signal_persistence_score'] > 0
+    assert any('持续' in r for r in scored['reasons'])
+    assert scored['state'] != 'NO_CHASE_NEGATIVE_FUNDING'
+
+
+def test_detect_guillotine_candle_risk_flags_fast_pump_then_dump():
+    risk = detect_guillotine_candle_risk({
+        'return_24h_pct': 42.0,
+        'return_1h_pct': -16.0,
+        'range_position_24h_pct': 92.0,
+        'volume_1h_vs_24h_avg_pct': 260.0,
+        'atr_1h_pct': 5.0,
+    })
+    assert risk['guillotine_candle_risk'] is True
+    assert risk['guillotine_risk_score'] <= -20
+    assert any('断头线' in r for r in risk['risks'])
+
+
+def test_score_candidate_marks_guillotine_as_no_chase():
+    scored = score_candidate({
+        'symbol': 'KNIFE',
+        'price_change_1h_pct': -15.0,
+        'return_1h_pct': -15.0,
+        'return_24h_pct': 55.0,
+        'volume_change_1h_pct': 210.0,
+        'volume_1h_vs_24h_avg_pct': 260.0,
+        'oi_change_1h_pct': 18.0,
+        'funding_rate_pct': 0.02,
+        'long_liq_1h_usd': 110000,
+        'short_liq_1h_usd': 12000,
+        'depth_usd': 240000,
+        'spread_pct': 0.05,
+        'range_position_24h_pct': 88.0,
+        'atr_1h_pct': 6.0,
+    })
+    assert scored['guillotine_candle_risk'] is True
+    assert scored['state'] == 'NO_CHASE_GUILLOTINE'
+    assert scored['allow_trade'] is False
+    assert scored['score'] <= 45
 
 
 def test_report_contains_manual_confirmation_and_no_auto_order():

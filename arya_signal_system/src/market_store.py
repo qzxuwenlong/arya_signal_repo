@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 
 @dataclass(frozen=True)
@@ -96,6 +96,25 @@ class MarketStore:
                 (exchange, symbol.upper(), target_ts),
             ).fetchone()
         return self._row_to_snapshot(row)
+
+    def snapshots_since(self, exchange: str, symbol: str, since_ts: int, *, before_ts: int | None = None, limit: int = 24) -> List[MarketSnapshot]:
+        with self._connect() as conn:
+            params: list[object] = [exchange, symbol.upper(), since_ts]
+            before_clause = ''
+            if before_ts is not None:
+                before_clause = 'AND ts <= ?'
+                params.append(before_ts)
+            params.append(limit)
+            rows = conn.execute(
+                f"""
+                SELECT * FROM market_snapshots
+                WHERE exchange = ? AND symbol = ? AND ts >= ? {before_clause}
+                ORDER BY ts ASC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        return [s for s in (self._row_to_snapshot(row) for row in rows) if s is not None]
 
     @staticmethod
     def _row_to_snapshot(row: sqlite3.Row | None) -> Optional[MarketSnapshot]:

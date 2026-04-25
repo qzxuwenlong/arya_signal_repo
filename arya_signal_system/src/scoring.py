@@ -12,6 +12,74 @@ def _num(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
+    return max(low, min(high, value))
+
+
+def assess_funding_quality(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    funding = _num(candidate.get('funding_rate_pct'))
+    oi = _num(candidate.get('oi_change_1h_pct'))
+    price = _num(candidate.get('price_change_1h_pct') or candidate.get('return_1h_pct'))
+    vol = _num(candidate.get('volume_change_1h_pct') or candidate.get('volume_1h_vs_24h_avg_pct'))
+    persistence = _num(candidate.get('signal_persistence_count'))
+    reasons: List[str] = []
+    risks: List[str] = []
+    quality = 'neutral'
+    score = 0
+
+    if funding <= -0.01:
+        if oi >= 12 and price >= -1.5 and vol >= 30:
+            quality = 'negative_confirmed_long_fuel'
+            score = 12
+            reasons.append('负费率伴随 OI 增长、价格抗跌和成交放大，空头燃料被确认')
+            if persistence >= 2:
+                score += 8
+                reasons.append('负费率/OI/成交结构持续出现，不是单次监控噪音')
+        elif oi <= 0 or price <= -4 or vol < 25:
+            quality = 'negative_funding_trap'
+            score = -25
+            risks.append('负费率缺少 OI/价格/成交确认，可能是诱多或做市商猎杀跟车多头')
+        else:
+            quality = 'negative_unconfirmed'
+            score = -5
+            risks.append('负费率尚未获得 OI 与价格结构确认，禁止直接追多')
+    elif funding >= 0.08:
+        quality = 'positive_tail_risk'
+        score = -18
+        risks.append('正资金费率偏极端，多头拥挤/尾部收网风险升高')
+    elif abs(funding) >= 0.01:
+        quality = 'funding_deviation'
+        score = 5
+        reasons.append('资金费率偏离常态，可作为情绪燃料但需结构确认')
+
+    return {
+        'funding_quality': quality,
+        'funding_quality_score': score,
+        'reasons': reasons,
+        'risks': risks,
+    }
+
+
+def detect_guillotine_candle_risk(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    ret_24h = _num(candidate.get('return_24h_pct'))
+    ret_1h = _num(candidate.get('return_1h_pct') or candidate.get('price_change_1h_pct'))
+    range_pos = _num(candidate.get('range_position_24h_pct'), 50.0)
+    volume_boost = _num(candidate.get('volume_1h_vs_24h_avg_pct') or candidate.get('volume_change_1h_pct'))
+    atr = _num(candidate.get('atr_1h_pct'))
+    is_risk = ret_24h >= 25 and ret_1h <= -8 and range_pos >= 75 and volume_boost >= 80
+    score = -30 if is_risk else 0
+    risks: List[str] = []
+    if is_risk:
+        risks.append('断头线风险：高位放量急砸，疑似庄币拉高后派发/猎杀追涨')
+        if atr >= 5:
+            risks.append('ATR 偏高，止损容易被大波动扫掉')
+    return {
+        'guillotine_candle_risk': is_risk,
+        'guillotine_risk_score': score,
+        'risks': risks,
+    }
+
+
 def normalize_symbol(symbol: str) -> str:
     s = (symbol or '').upper().strip()
     for suffix in ('-USDT-SWAP', '-USDT', 'USDT', 'USD'):
@@ -36,9 +104,17 @@ def classify_signal(candidate: Dict[str, Any]) -> Dict[str, Any]:
     depth = _num(candidate.get('depth_usd'))
     spread = _num(candidate.get('spread_pct'))
     top10 = _num(candidate.get('top10_holder_pct'))
+    funding_quality = assess_funding_quality(candidate)
+    guillotine = detect_guillotine_candle_risk(candidate)
 
     if depth <= 0 or spread <= 0:
         return {'state': 'WATCH_ONLY', 'model': '待确认', 'direction': '待确认', 'strategy': '只观察', 'allow_trade': False}
+
+    if guillotine['guillotine_candle_risk']:
+        return {'state': 'NO_CHASE_GUILLOTINE', 'model': '断头线风险', 'direction': '不追', 'strategy': '禁止追涨/等待结构修复', 'allow_trade': False}
+
+    if funding_quality['funding_quality'] == 'negative_funding_trap':
+        return {'state': 'NO_CHASE_NEGATIVE_FUNDING', 'model': '负费率诱多风险', 'direction': '不追多', 'strategy': '只观察/等待持续确认', 'allow_trade': False}
 
     liquidity_bad = depth < 50_000 or spread > 0.25
     liq_total = long_liq + short_liq
@@ -110,6 +186,16 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     hype_rank = _num(c.get('binance_hype_rank'), 999)
     smart = _num(c.get('smart_money_count'))
     top10 = _num(c.get('top10_holder_pct'))
+    persistence_score = _num(c.get('signal_persistence_score'))
+    if persistence_score <= 0 and _num(c.get('signal_persistence_count')) > 0:
+        persistence_score = min(20, _num(c.get('signal_persistence_count')) * 5)
+    funding_quality = assess_funding_quality({**c, 'signal_persistence_score': persistence_score})
+    guillotine = detect_guillotine_candle_risk(c)
+    c['funding_quality'] = funding_quality['funding_quality']
+    c['funding_quality_score'] = funding_quality['funding_quality_score']
+    c['signal_persistence_score'] = persistence_score
+    c['guillotine_candle_risk'] = guillotine['guillotine_candle_risk']
+    c['guillotine_risk_score'] = guillotine['guillotine_risk_score']
 
     if depth >= 100_000 and spread <= 0.10:
         score += 15
@@ -140,9 +226,21 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     if abs(funding) >= 0.10:
         score -= 25
         risks.append('资金费率极端，进入尾部/收网风险区')
-    elif abs(funding) >= 0.01:
-        score += 8
-        reasons.append('资金费率偏离常态，可作为情绪燃料')
+    else:
+        score += funding_quality['funding_quality_score']
+        reasons.extend(funding_quality['reasons'])
+        risks.extend(funding_quality['risks'])
+
+    if persistence_score >= 10:
+        score += min(10, persistence_score / 2)
+        reasons.append('信号持续性达标：多次监控确认 funding/OI/成交/价格结构')
+    elif funding <= -0.01 and _num(c.get('signal_persistence_count')) <= 1:
+        score -= 8
+        risks.append('单次负费率/OI监控触发，缺少持续性确认，禁止追车')
+
+    if guillotine['guillotine_candle_risk']:
+        score += guillotine['guillotine_risk_score']
+        risks.extend(guillotine['risks'])
 
     buy_sell_ratio = _num(c.get('buy_sell_ratio_1h'))
     top_account_lsr = _num(c.get('top_account_long_short_ratio'))
@@ -184,7 +282,7 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     elif cls['state'] == 'LONG_PULLBACK':
         score += 25
         reasons.append('强势币深回调后放量回拉，符合回调试多模型')
-    elif cls['state'] in {'EXIT_RISK', 'NO_TRADE_FAKE_OI', 'OI_FAKE_SUSPECT', 'SHORT_TAIL_RISK'}:
+    elif cls['state'] in {'EXIT_RISK', 'NO_TRADE_FAKE_OI', 'OI_FAKE_SUSPECT', 'SHORT_TAIL_RISK', 'NO_CHASE_NEGATIVE_FUNDING', 'NO_CHASE_GUILLOTINE'}:
         score = min(score, 45)
 
     c.update(cls)

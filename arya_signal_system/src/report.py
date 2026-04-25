@@ -33,6 +33,10 @@ def render_markdown_report(candidates: Iterable[Dict[str, Any]], source_status: 
             lines.append(
                 f'- 本地燃料：{ready}｜OI 1h {float(c.get("oi_change_1h_pct") or 0):.2f}%｜量 1h {float(c.get("volume_change_1h_pct") or 0):.2f}%｜价 1h {float(c.get("price_change_1h_pct") or 0):.2f}%'
             )
+        if c.get('funding_quality'):
+            lines.append(
+                f'- 负费率质量：{c.get("funding_quality")}｜funding_score {float(c.get("funding_quality_score") or 0):.0f}｜persistence {float(c.get("signal_persistence_score") or 0):.0f}｜断头线 {"yes" if c.get("guillotine_candle_risk") else "no"}'
+            )
         if c.get('coinank_status'):
             lines.append(
                 f'- 衍生品增强：CoinAnk {c.get("coinank_status")}｜爆多1h {float(c.get("long_liq_1h_usd") or 0):.0f}｜爆空1h {float(c.get("short_liq_1h_usd") or 0):.0f}｜买卖比 {float(c.get("buy_sell_ratio_1h") or 0):.2f}'

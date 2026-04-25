@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from src.market_store import MarketSnapshot, MarketStore
-from src.fuel_metrics import compute_fuel_metrics, enrich_candidate_with_local_history
+from src.fuel_metrics import compute_fuel_metrics, enrich_candidate_with_local_history, compute_signal_persistence
 
 
 def test_market_store_persists_and_returns_window_snapshots(tmp_path):
@@ -43,3 +43,20 @@ def test_enrich_candidate_uses_local_history_when_available(tmp_path):
     assert enriched['price_change_1h_pct'] == 10.0
     assert enriched['volume_change_1h_pct'] == 80.0
     assert enriched['local_history_ready'] is True
+
+
+def test_compute_signal_persistence_counts_recent_confirmed_snapshots(tmp_path):
+    store = MarketStore(tmp_path / 'market.sqlite')
+    for ts, price, volume, oi, funding in [
+        (1000, 1.00, 100_000, 1_000_000, -0.03),
+        (1300, 1.01, 140_000, 1_120_000, -0.035),
+        (1600, 1.03, 190_000, 1_280_000, -0.04),
+    ]:
+        store.record_snapshot(MarketSnapshot(ts=ts, exchange='okx', symbol='KAT', price=price, volume_1h=volume, open_interest_usd=oi, funding_rate_pct=funding, depth_usd=200_000, spread_pct=0.04))
+
+    current = MarketSnapshot(ts=1900, exchange='okx', symbol='KAT', price=1.05, volume_1h=260_000, open_interest_usd=1_500_000, funding_rate_pct=-0.045, depth_usd=250_000, spread_pct=0.03)
+    metrics = compute_signal_persistence(store, current, lookback_sec=1200)
+
+    assert metrics['signal_persistence_count'] >= 3
+    assert metrics['signal_persistence_score'] > 0
+    assert metrics['funding_negative_persistent'] is True
