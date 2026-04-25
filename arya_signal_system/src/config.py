@@ -10,5 +10,17 @@ RUNS_DIR = PROJECT_ROOT / 'runs'
 DATA_DIR = PROJECT_ROOT / 'data'
 MARKET_STATE_DB = DATA_DIR / 'market_state.sqlite'
 
+
+def use_coinank_enrichment() -> bool:
+    """CoinAnk is an optional enhancement; default scanner mode is OKX-only."""
+    mode = os.getenv('ARYA_DERIVATIVES_MODE', '').strip().lower()
+    if mode in {'okx_only', 'okx-only'}:
+        return False
+    if mode in {'okx_coinank', 'coinank', 'okx+coinank'}:
+        return True
+    return os.getenv('ARYA_USE_COINANK', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
 # V1/V1.5 安全边界：代码层永久禁止自动下单。
 ORDER_EXECUTION_ENABLED = False
+

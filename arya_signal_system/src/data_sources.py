@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from .historical_metrics import compute_candle_metrics
+from .config import use_coinank_enrichment
 
 USER_AGENT = 'arya-signal-system/1.0 (Hermes)'
 
@@ -260,7 +261,9 @@ def binance_rank_map(rows: List[dict]) -> Dict[str, Dict[str, Any]]:
 
 
 def coinank_status() -> SourceResult:
-    if not os.getenv('COINANK_API_KEY'):
+    if not use_coinank_enrichment():
+        return SourceResult('disabled_by_config', {})
+    if not os.getenv('COINANK_API_KEY') and not os.getenv('COINANK_APIKEY'):
         return SourceResult('missing_key', {})
     return SourceResult('configured_not_called_v1', {})
 
@@ -279,3 +282,4 @@ def load_knowledge_summary(vault_path: str = VAULT_PATH) -> Dict[str, Any]:
             if os.path.exists(p):
                 summary['files'].append(p)
     return summary
+

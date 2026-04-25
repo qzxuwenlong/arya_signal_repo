@@ -22,7 +22,7 @@ from .report import render_markdown_report
 from .scoring import normalize_symbol, score_candidate
 from .fuel_metrics import enrich_candidate_with_local_history
 from .market_store import MarketStore
-from .config import MARKET_STATE_DB, ORDER_EXECUTION_ENABLED, PROXY_URL
+from .config import MARKET_STATE_DB, ORDER_EXECUTION_ENABLED, PROXY_URL, use_coinank_enrichment
 
 DEFAULT_WATCHLIST = ['BTC-USDT-SWAP', 'ETH-USDT-SWAP', 'SOL-USDT-SWAP', 'DOGE-USDT-SWAP', 'WIF-USDT-SWAP', 'PEPE-USDT-SWAP', 'BOME-USDT-SWAP', 'ORDI-USDT-SWAP']
 
@@ -54,7 +54,8 @@ def run_scan(limit: int = 8, use_live: bool = True) -> Dict[str, Any]:
 
     coinank = coinank_status()
     source_status['coinank'] = coinank.status
-    source_status['coinank_enrichment'] = 'enabled' if use_live and coinank_enabled() else ('missing_key' if use_live else 'disabled')
+    coinank_enrichment_enabled = bool(use_live and use_coinank_enrichment() and coinank_enabled())
+    source_status['coinank_enrichment'] = 'enabled' if coinank_enrichment_enabled else coinank.status
     source_status['local_market_db'] = str(MARKET_STATE_DB)
     now_ts = int(time())
     market_store = MarketStore(MARKET_STATE_DB) if use_live else None
@@ -90,7 +91,7 @@ def run_scan(limit: int = 8, use_live: bool = True) -> Dict[str, Any]:
             if inst_id in selection_by_id:
                 c.update({k: v for k, v in selection_by_id[inst_id].items() if k not in {'symbol'}})
             c = merge_binance_signal(c, rank_lookup)
-            if use_live and coinank_enabled() and 'error' not in c:
+            if coinank_enrichment_enabled and 'error' not in c:
                 c = enrich_candidate_with_coinank(c)
             if market_store is not None and 'error' not in c:
                 exchange_metrics = {
@@ -133,3 +134,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
