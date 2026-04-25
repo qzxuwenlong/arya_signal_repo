@@ -276,6 +276,24 @@ def test_score_candidate_marks_guillotine_as_no_chase():
     assert scored['score'] <= 45
 
 
+def test_report_renders_state_with_chinese_note():
+    scored = score_candidate({
+        'symbol': 'TRAP',
+        'price_change_1h_pct': -5.0,
+        'volume_change_1h_pct': 10.0,
+        'oi_change_1h_pct': -3.0,
+        'funding_rate_pct': -0.025,
+        'long_liq_1h_usd': 1000,
+        'short_liq_1h_usd': 1000,
+        'depth_usd': 200000,
+        'spread_pct': 0.05,
+    })
+    report = render_markdown_report([scored])
+
+    assert 'NO_CHASE_NEGATIVE_FUNDING' in report
+    assert '负费率诱多，不追多' in report
+
+
 def test_report_contains_manual_confirmation_and_no_auto_order():
     scored = score_candidate({'symbol':'TEST','score':80,'depth_usd':200000,'spread_pct':0.03,'oi_change_1h_pct':20,'short_liq_1h_usd':100000,'long_liq_1h_usd':1000})
     report = render_markdown_report([scored], source_status={'okx':'ok','binance_web3':'ok','coinank':'missing_key'})

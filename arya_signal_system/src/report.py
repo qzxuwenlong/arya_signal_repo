@@ -4,6 +4,28 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List
 
 
+STATE_NOTES: Dict[str, str] = {
+    'LONG_SQUEEZE': '爆空顺势多：空头燃料被验证，可人工确认后观察做多',
+    'LONG_PULLBACK': '强庄回调试多：强势币回踩后转强，等待人工确认',
+    'SHORT_BREAKDOWN': '破位做空：多头爆仓/庄撤仓结构，偏空观察',
+    'SHORT_ALERT': '偏空警报：下跌放量且多头爆仓占优',
+    'TREND_ALERT': '趋势警报：趋势和热度共振，需人工确认',
+    'SQUEEZE_ACTIVE': '挤压启动：爆仓燃料正在释放，需人工确认',
+    'GRID_ALLOWED': '网格可观察：震荡结构，非追涨杀跌信号',
+    'WATCH_ONLY': '只观察：数据不足或结构未确认',
+    'EXIT_RISK': '退出风险：尾部/收网风险高，不作为入场信号',
+    'NO_TRADE_FAKE_OI': '假 OI 风险：OI 增长未被价格/成交验证，禁止交易',
+    'OI_FAKE_SUSPECT': '疑似假 OI：只观察，等待更多确认',
+    'SHORT_TAIL_RISK': '尾部高危：多头拥挤或顶部风险，不追多',
+    'NO_CHASE_NEGATIVE_FUNDING': '负费率诱多，不追多：缺少 OI/价格/成交持续确认',
+    'NO_CHASE_GUILLOTINE': '断头线风险，不追涨：高位放量急砸，等待结构修复',
+}
+
+
+def state_note(state: str | None) -> str:
+    return STATE_NOTES.get(state or '', '状态待确认：只作为观察信号')
+
+
 def render_markdown_report(candidates: Iterable[Dict[str, Any]], source_status: Dict[str, str] | None = None) -> str:
     rows: List[Dict[str, Any]] = sorted(list(candidates), key=lambda x: x.get('score', 0), reverse=True)
     source_status = source_status or {}
@@ -24,7 +46,8 @@ def render_markdown_report(candidates: Iterable[Dict[str, Any]], source_status: 
         lines.append('暂无符合条件的异常币。')
         return '\n'.join(lines)
     for i, c in enumerate(rows, 1):
-        lines.append(f'### {i}. {c.get("symbol", "UNKNOWN")}｜{c.get("state", "WATCH_ONLY")}｜{c.get("score", 0)}分')
+        state = c.get("state", "WATCH_ONLY")
+        lines.append(f'### {i}. {c.get("symbol", "UNKNOWN")}｜{state}｜{state_note(state)}｜{c.get("score", 0)}分')
         lines.append(f'- 方向：{c.get("direction", "待确认")}')
         lines.append(f'- 策略：{c.get("strategy", "只观察")}')
         lines.append(f'- 执行：不自动下单，需人工确认')
