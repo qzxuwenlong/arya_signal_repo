@@ -17,6 +17,7 @@ from .data_sources import (
     load_knowledge_summary,
     select_okx_opportunity_pool,
 )
+from .coinank_client import coinank_enabled, enrich_candidate_with_coinank
 from .report import render_markdown_report
 from .scoring import normalize_symbol, score_candidate
 from .fuel_metrics import enrich_candidate_with_local_history
@@ -53,6 +54,7 @@ def run_scan(limit: int = 8, use_live: bool = True) -> Dict[str, Any]:
 
     coinank = coinank_status()
     source_status['coinank'] = coinank.status
+    source_status['coinank_enrichment'] = 'enabled' if use_live and coinank_enabled() else ('missing_key' if use_live else 'disabled')
     source_status['local_market_db'] = str(MARKET_STATE_DB)
     now_ts = int(time())
     market_store = MarketStore(MARKET_STATE_DB) if use_live else None
@@ -88,6 +90,8 @@ def run_scan(limit: int = 8, use_live: bool = True) -> Dict[str, Any]:
             if inst_id in selection_by_id:
                 c.update({k: v for k, v in selection_by_id[inst_id].items() if k not in {'symbol'}})
             c = merge_binance_signal(c, rank_lookup)
+            if use_live and coinank_enabled() and 'error' not in c:
+                c = enrich_candidate_with_coinank(c)
             if market_store is not None and 'error' not in c:
                 exchange_metrics = {
                     'price_change_1h_pct': c.get('price_change_1h_pct', 0.0),

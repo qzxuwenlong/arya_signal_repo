@@ -144,6 +144,30 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         score += 8
         reasons.append('资金费率偏离常态，可作为情绪燃料')
 
+    buy_sell_ratio = _num(c.get('buy_sell_ratio_1h'))
+    top_account_lsr = _num(c.get('top_account_long_short_ratio'))
+    top_position_lsr = _num(c.get('top_position_long_short_ratio'))
+    binance_oi_share = _num(c.get('binance_oi_share_pct'))
+    okx_oi_share = _num(c.get('okx_oi_share_pct'))
+    if buy_sell_ratio >= 1.5:
+        reasons.append('主动买盘明显强于卖盘')
+        score += 6
+    elif 0 < buy_sell_ratio <= 0.67:
+        reasons.append('主动卖盘明显强于买盘')
+        score += 6
+    if top_account_lsr >= 2.0 or top_position_lsr >= 2.0:
+        risks.append('大户多空比偏多，注意多头拥挤')
+        score -= 4
+    elif 0 < top_account_lsr <= 0.5 or 0 < top_position_lsr <= 0.5:
+        risks.append('大户多空比偏空，注意空头拥挤/爆空')
+        score -= 2
+    if binance_oi_share >= 35:
+        reasons.append('Binance OI 占比高，主战场流动性更强')
+        score += 4
+    if okx_oi_share >= 35:
+        reasons.append('OKX OI 占比高，本交易所信号参考价值更强')
+        score += 4
+
     if hype_rank <= 20:
         score += 10
         reasons.append('Binance Web3 热度靠前，具备传播入口')

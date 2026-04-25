@@ -33,6 +33,13 @@ def render_markdown_report(candidates: Iterable[Dict[str, Any]], source_status: 
             lines.append(
                 f'- 本地燃料：{ready}｜OI 1h {float(c.get("oi_change_1h_pct") or 0):.2f}%｜量 1h {float(c.get("volume_change_1h_pct") or 0):.2f}%｜价 1h {float(c.get("price_change_1h_pct") or 0):.2f}%'
             )
+        if c.get('coinank_status'):
+            lines.append(
+                f'- 衍生品增强：CoinAnk {c.get("coinank_status")}｜爆多1h {float(c.get("long_liq_1h_usd") or 0):.0f}｜爆空1h {float(c.get("short_liq_1h_usd") or 0):.0f}｜买卖比 {float(c.get("buy_sell_ratio_1h") or 0):.2f}'
+            )
+            lines.append(
+                f'- OI分布：Binance {float(c.get("binance_oi_share_pct") or 0):.1f}%｜OKX {float(c.get("okx_oi_share_pct") or 0):.1f}%｜OKX OI 5m/15m/1h {float(c.get("coinank_oi_change_5m_pct") or 0):.2f}%/{float(c.get("coinank_oi_change_15m_pct") or 0):.2f}%/{float(c.get("coinank_oi_change_1h_pct") or 0):.2f}%'
+            )
         reasons = c.get('reasons') or []
         risks = c.get('risks') or []
         if reasons:
