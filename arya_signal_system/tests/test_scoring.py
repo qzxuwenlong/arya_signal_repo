@@ -28,7 +28,8 @@ def test_squeeze_active_scores_high_when_oi_liquidation_and_hype_align():
     }
     scored = score_candidate(candidate)
     assert scored['score'] >= 70
-    assert scored['state'] == 'SQUEEZE_ACTIVE'
+    assert scored['state'] == 'LONG_SQUEEZE'
+    assert scored['model'] == '做多模型A-爆空顺势多'
     assert scored['direction'] == '偏多'
     assert any('爆空' in r or '空头爆仓' in r for r in scored['reasons'])
 
@@ -50,10 +51,84 @@ def test_short_alert_when_downtrend_oi_volume_and_long_liquidation_align():
     scored = score_candidate(candidate)
 
     assert scored['score'] >= 70
-    assert scored['state'] == 'SHORT_ALERT'
+    assert scored['state'] == 'SHORT_BREAKDOWN'
+    assert scored['model'] == '做空模型A-庄撤仓收网'
     assert scored['direction'] == '偏空'
     assert scored['strategy'] == '做空/瀑布'
     assert any('做空' in r or '多头爆仓' in r for r in scored['reasons'])
+
+
+def test_long_pullback_when_strong_coin_reclaims_after_deep_pullback():
+    candidate = {
+        'symbol': 'PULLBACK',
+        'price_change_1h_pct': 4.2,
+        'return_4h_pct': -11.0,
+        'return_24h_pct': 38.0,
+        'volume_change_1h_pct': 85.0,
+        'oi_change_1h_pct': 12.0,
+        'funding_rate_pct': 0.012,
+        'long_liq_1h_usd': 22000,
+        'short_liq_1h_usd': 56000,
+        'depth_usd': 260000,
+        'spread_pct': 0.05,
+        'range_position_24h_pct': 42.0,
+        'trend_strength': 1.3,
+        'binance_hype_rank': 15,
+    }
+
+    scored = score_candidate(candidate)
+
+    assert scored['state'] == 'LONG_PULLBACK'
+    assert scored['model'] == '做多模型B-强庄回调抄底'
+    assert scored['direction'] == '偏多'
+    assert scored['strategy'] == '回调试多'
+    assert scored['score'] >= 55
+
+
+def test_short_tail_risk_when_funding_extreme_after_tail_squeeze():
+    candidate = {
+        'symbol': 'TAIL',
+        'price_change_1h_pct': 0.5,
+        'return_24h_pct': 70.0,
+        'volume_change_1h_pct': 20.0,
+        'oi_change_1h_pct': 42.0,
+        'funding_rate_pct': 0.135,
+        'long_liq_1h_usd': 18000,
+        'short_liq_1h_usd': 35000,
+        'depth_usd': 200000,
+        'spread_pct': 0.06,
+        'range_position_24h_pct': 94.0,
+    }
+
+    scored = score_candidate(candidate)
+
+    assert scored['state'] == 'SHORT_TAIL_RISK'
+    assert scored['model'] == '做空模型B-尾部高危反手观察'
+    assert scored['direction'] == '不追多'
+    assert scored['strategy'] == '减多/观察反手'
+    assert scored['allow_trade'] is False
+
+
+def test_no_trade_fake_oi_when_oi_expands_without_volume_or_liquidation():
+    candidate = {
+        'symbol': 'FAKEOI',
+        'price_change_1h_pct': 0.4,
+        'volume_change_1h_pct': 8.0,
+        'oi_change_1h_pct': 36.0,
+        'funding_rate_pct': 0.006,
+        'long_liq_1h_usd': 1200,
+        'short_liq_1h_usd': 1600,
+        'depth_usd': 180000,
+        'spread_pct': 0.05,
+    }
+
+    scored = score_candidate(candidate)
+
+    assert scored['state'] == 'NO_TRADE_FAKE_OI'
+    assert scored['model'] == '无效模型-OI未验证'
+    assert scored['direction'] == '不做'
+    assert scored['strategy'] == '只观察'
+    assert scored['score'] <= 45
 
 
 def test_grid_allowed_when_volatility_and_depth_ok_but_no_squeeze():

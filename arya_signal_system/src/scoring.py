@@ -26,6 +26,10 @@ def classify_signal(candidate: Dict[str, Any]) -> Dict[str, Any]:
     vol = _num(candidate.get('volume_change_1h_pct'))
     oi = _num(candidate.get('oi_change_1h_pct'))
     funding = _num(candidate.get('funding_rate_pct'))
+    return_4h = _num(candidate.get('return_4h_pct'))
+    return_24h = _num(candidate.get('return_24h_pct'))
+    range_pos = _num(candidate.get('range_position_24h_pct'), 50.0)
+    trend_strength = _num(candidate.get('trend_strength'))
     funding_extreme = abs(funding) >= 0.10
     long_liq = _num(candidate.get('long_liq_1h_usd'))
     short_liq = _num(candidate.get('short_liq_1h_usd'))
@@ -33,32 +37,59 @@ def classify_signal(candidate: Dict[str, Any]) -> Dict[str, Any]:
     spread = _num(candidate.get('spread_pct'))
     top10 = _num(candidate.get('top10_holder_pct'))
 
-    if funding_extreme:
-        return {'state': 'EXIT_RISK', 'direction': '不做', 'strategy': '退出/禁止', 'allow_trade': False}
     if depth <= 0 or spread <= 0:
-        return {'state': 'WATCH_ONLY', 'direction': '待确认', 'strategy': '只观察', 'allow_trade': False}
+        return {'state': 'WATCH_ONLY', 'model': '待确认', 'direction': '待确认', 'strategy': '只观察', 'allow_trade': False}
+
     liquidity_bad = depth < 50_000 or spread > 0.25
     liq_total = long_liq + short_liq
     oi_without_liq = oi >= 25 and liq_total < 20_000
+    tail_risk = funding_extreme and oi >= 25 and return_24h >= 30 and range_pos >= 80
 
-    if liquidity_bad or funding_extreme or top10 >= 55:
-        if oi_without_liq or funding_extreme or liquidity_bad:
-            return {'state': 'EXIT_RISK' if funding_extreme or liquidity_bad else 'OI_FAKE_SUSPECT', 'direction': '不做', 'strategy': '退出/禁止', 'allow_trade': False}
+    if tail_risk:
+        return {
+            'state': 'SHORT_TAIL_RISK',
+            'model': '做空模型B-尾部高危反手观察',
+            'direction': '不追多',
+            'strategy': '减多/观察反手',
+            'allow_trade': False,
+        }
+
+    if funding_extreme:
+        return {'state': 'EXIT_RISK', 'model': '尾部风险', 'direction': '不做', 'strategy': '退出/禁止', 'allow_trade': False}
+
+    if liquidity_bad or top10 >= 55:
+        if oi_without_liq or liquidity_bad:
+            return {'state': 'EXIT_RISK' if liquidity_bad else 'NO_TRADE_FAKE_OI', 'model': '无效模型-OI未验证', 'direction': '不做', 'strategy': '退出/禁止' if liquidity_bad else '只观察', 'allow_trade': False}
 
     if oi_without_liq:
-        return {'state': 'OI_FAKE_SUSPECT', 'direction': '不做', 'strategy': '只观察', 'allow_trade': False}
+        return {'state': 'NO_TRADE_FAKE_OI', 'model': '无效模型-OI未验证', 'direction': '不做', 'strategy': '只观察', 'allow_trade': False}
 
     if oi >= 15 and vol >= 50 and max(long_liq, short_liq) >= 80_000:
         if short_liq > long_liq * 2 and price >= 0:
-            return {'state': 'SQUEEZE_ACTIVE', 'direction': '偏多', 'strategy': '趋势/爆空', 'allow_trade': False}
+            return {'state': 'LONG_SQUEEZE', 'model': '做多模型A-爆空顺势多', 'direction': '偏多', 'strategy': '趋势/爆空', 'allow_trade': False}
         if long_liq > short_liq * 2 and price <= 0:
-            return {'state': 'SHORT_ALERT', 'direction': '偏空', 'strategy': '做空/瀑布', 'allow_trade': False}
-        return {'state': 'TREND_ALERT', 'direction': '待确认', 'strategy': '趋势观察', 'allow_trade': False}
+            return {'state': 'SHORT_BREAKDOWN', 'model': '做空模型A-庄撤仓收网', 'direction': '偏空', 'strategy': '做空/瀑布', 'allow_trade': False}
+        return {'state': 'TREND_ALERT', 'model': '趋势燃料待确认', 'direction': '待确认', 'strategy': '趋势观察', 'allow_trade': False}
+
+    pullback_reclaim = (
+        return_24h >= 20
+        and return_4h <= -6
+        and price >= 2
+        and vol >= 50
+        and oi >= 8
+        and depth >= 100_000
+        and spread <= 0.10
+        and abs(funding) <= 0.05
+        and 20 <= range_pos <= 70
+        and trend_strength >= 1.0
+    )
+    if pullback_reclaim:
+        return {'state': 'LONG_PULLBACK', 'model': '做多模型B-强庄回调抄底', 'direction': '偏多', 'strategy': '回调试多', 'allow_trade': False}
 
     if depth >= 100_000 and spread <= 0.10 and abs(price) <= 3 and abs(funding) <= 0.03 and oi <= 12:
-        return {'state': 'GRID_ALLOWED', 'direction': '中性', 'strategy': '网格/震荡', 'allow_trade': False}
+        return {'state': 'GRID_ALLOWED', 'model': '震荡网格', 'direction': '中性', 'strategy': '网格/震荡', 'allow_trade': False}
 
-    return {'state': 'WATCH_ONLY', 'direction': '待确认', 'strategy': '只观察', 'allow_trade': False}
+    return {'state': 'WATCH_ONLY', 'model': '待确认', 'direction': '待确认', 'strategy': '只观察', 'allow_trade': False}
 
 
 def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
@@ -124,9 +155,12 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         risks.append('Top10 持仓过度集中')
 
     cls = classify_signal(c)
-    if cls['state'] in {'SQUEEZE_ACTIVE', 'SHORT_ALERT'}:
+    if cls['state'] in {'LONG_SQUEEZE', 'SQUEEZE_ACTIVE', 'SHORT_BREAKDOWN', 'SHORT_ALERT'}:
         score += 10
-    elif cls['state'] in {'EXIT_RISK', 'OI_FAKE_SUSPECT'}:
+    elif cls['state'] == 'LONG_PULLBACK':
+        score += 25
+        reasons.append('强势币深回调后放量回拉，符合回调试多模型')
+    elif cls['state'] in {'EXIT_RISK', 'NO_TRADE_FAKE_OI', 'OI_FAKE_SUSPECT', 'SHORT_TAIL_RISK'}:
         score = min(score, 45)
 
     c.update(cls)
