@@ -12,10 +12,11 @@ PAPER_ACTIONABLE_STATES = {
     'SHORT_BREAKDOWN',
     'SHORT_ALERT',
     'TREND_ALERT',
+    'FLASH_CRASH_SHORT',
 }
 LONG_STATES = {'LONG_SQUEEZE', 'LONG_PULLBACK', 'SQUEEZE_ACTIVE', 'TREND_ALERT'}
-SHORT_STATES = {'SHORT_BREAKDOWN', 'SHORT_ALERT'}
-NO_ENTRY_STATES = {'EXIT_RISK', 'NO_TRADE_FAKE_OI', 'SHORT_TAIL_RISK'}
+SHORT_STATES = {'SHORT_BREAKDOWN', 'SHORT_ALERT', 'FLASH_CRASH_SHORT'}
+NO_ENTRY_STATES = {'EXIT_RISK', 'NO_TRADE_FAKE_OI', 'SHORT_TAIL_RISK', 'NO_CHASE_NEGATIVE_FUNDING', 'NO_CHASE_GUILLOTINE', 'NO_TRADE_UNFAIR_GAME'}
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -104,6 +105,11 @@ def build_paper_trade_rows(scan: Dict[str, Any], *, now_ts: int | None = None, m
             'volume_change_1h_pct': _num(c.get('volume_change_1h_pct')),
             'oi_change_1h_pct': _num(c.get('oi_change_1h_pct')),
             'atr_1h_pct': _num(c.get('atr_1h_pct')),
+            'counterparty_fuel_score': _num(c.get('counterparty_fuel_score')),
+            'counterparty_fuel_direction': c.get('counterparty_fuel_direction'),
+            'fair_game': c.get('fair_game'),
+            'fair_game_score': _num(c.get('fair_game_score')),
+            'flash_crash_short': bool(c.get('flash_crash_short')),
             'local_history_ready': bool(history_ready),
             'order_execution': source_status.get('order_execution', 'disabled'),
             'notes': 'paper only; no API order; manual confirmation required for any real trade',

@@ -9,6 +9,7 @@ STATE_NOTES: Dict[str, str] = {
     'LONG_PULLBACK': '强庄回调试多：强势币回踩后转强，等待人工确认',
     'SHORT_BREAKDOWN': '破位做空：多头爆仓/庄撤仓结构，偏空观察',
     'SHORT_ALERT': '偏空警报：下跌放量且多头爆仓占优',
+    'FLASH_CRASH_SHORT': '妖币闪崩空：高位过热后放量破位，多头燃料被收割',
     'TREND_ALERT': '趋势警报：趋势和热度共振，需人工确认',
     'SQUEEZE_ACTIVE': '挤压启动：爆仓燃料正在释放，需人工确认',
     'GRID_ALLOWED': '网格可观察：震荡结构，非追涨杀跌信号',
@@ -19,6 +20,7 @@ STATE_NOTES: Dict[str, str] = {
     'SHORT_TAIL_RISK': '尾部高危：多头拥挤或顶部风险，不追多',
     'NO_CHASE_NEGATIVE_FUNDING': '负费率诱多，不追多：缺少 OI/价格/成交持续确认',
     'NO_CHASE_GUILLOTINE': '断头线风险，不追涨：高位放量急砸，等待结构修复',
+    'NO_TRADE_UNFAIR_GAME': '公平场不足，禁止交易：深度差/点差大/插针或庄控风险高',
 }
 
 
@@ -59,6 +61,10 @@ def render_markdown_report(candidates: Iterable[Dict[str, Any]], source_status: 
         if c.get('funding_quality'):
             lines.append(
                 f'- 负费率质量：{c.get("funding_quality")}｜funding_score {float(c.get("funding_quality_score") or 0):.0f}｜persistence {float(c.get("signal_persistence_score") or 0):.0f}｜断头线 {"yes" if c.get("guillotine_candle_risk") else "no"}'
+            )
+        if 'counterparty_fuel_score' in c or 'fair_game_score' in c:
+            lines.append(
+                f'- 对手盘燃料/公平场：fuel {float(c.get("counterparty_fuel_score") or 0):.0f}({c.get("counterparty_fuel_direction", "unconfirmed")})｜fair {"yes" if c.get("fair_game") else "no"}({float(c.get("fair_game_score") or 0):.0f})｜闪崩空 {"yes" if c.get("flash_crash_short") else "no"}'
             )
         if c.get('coinank_status'):
             lines.append(

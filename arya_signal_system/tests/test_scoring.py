@@ -7,6 +7,9 @@ from src.scoring import (
     normalize_symbol,
     assess_funding_quality,
     detect_guillotine_candle_risk,
+    compute_counterparty_fuel_score,
+    assess_fair_game_filter,
+    detect_flash_crash_short_model,
 )
 from src.report import render_markdown_report
 
@@ -275,6 +278,110 @@ def test_score_candidate_marks_guillotine_as_no_chase():
     assert scored['allow_trade'] is False
     assert scored['score'] <= 45
 
+
+
+def test_counterparty_fuel_score_identifies_short_fuel_for_long_squeeze():
+    fuel = compute_counterparty_fuel_score({
+        'symbol': 'FUEL',
+        'price_change_1h_pct': 4.5,
+        'volume_change_1h_pct': 95.0,
+        'oi_change_1h_pct': 26.0,
+        'funding_rate_pct': -0.032,
+        'short_liq_1h_usd': 260000,
+        'long_liq_1h_usd': 22000,
+        'buy_sell_ratio_1h': 1.7,
+        'signal_persistence_count': 3,
+    })
+
+    assert fuel['counterparty_fuel_direction'] == 'shorts_as_fuel'
+    assert fuel['counterparty_fuel_score'] >= 70
+    assert any('空头燃料' in r for r in fuel['reasons'])
+
+
+def test_fair_game_filter_blocks_unfair_thin_spiky_venues():
+    fair = assess_fair_game_filter({
+        'symbol': 'UNFAIR',
+        'depth_usd': 42000,
+        'spread_pct': 0.32,
+        'atr_1h_pct': 12.0,
+        'top10_holder_pct': 66,
+        'guillotine_candle_risk': False,
+    })
+
+    assert fair['fair_game'] is False
+    assert fair['fair_game_score'] <= -30
+    assert any('公平场' in r or '庄控' in r for r in fair['risks'])
+
+
+def test_flash_crash_short_model_detects_overheated_breakdown():
+    crash = detect_flash_crash_short_model({
+        'symbol': 'CRASH',
+        'price_change_1h_pct': -11.0,
+        'return_24h_pct': 64.0,
+        'range_position_24h_pct': 91.0,
+        'volume_change_1h_pct': 190.0,
+        'oi_change_1h_pct': 24.0,
+        'long_liq_1h_usd': 310000,
+        'short_liq_1h_usd': 18000,
+        'depth_usd': 260000,
+        'spread_pct': 0.05,
+    })
+
+    assert crash['flash_crash_short'] is True
+    assert crash['state'] == 'FLASH_CRASH_SHORT'
+    assert crash['score_bonus'] >= 20
+    assert any('闪崩' in r or '破位' in r for r in crash['reasons'])
+
+
+def test_score_candidate_blocks_unfair_game_and_reports_note():
+    scored = score_candidate({
+        'symbol': 'CASINO',
+        'price_change_1h_pct': 9.0,
+        'volume_change_1h_pct': 180.0,
+        'oi_change_1h_pct': 32.0,
+        'funding_rate_pct': 0.018,
+        'long_liq_1h_usd': 12000,
+        'short_liq_1h_usd': 180000,
+        'depth_usd': 35000,
+        'spread_pct': 0.36,
+        'atr_1h_pct': 15.0,
+        'top10_holder_pct': 72,
+    })
+    report = render_markdown_report([scored])
+
+    assert scored['state'] == 'NO_TRADE_UNFAIR_GAME'
+    assert scored['fair_game'] is False
+    assert scored['score'] <= 40
+    assert 'NO_TRADE_UNFAIR_GAME' in report
+    assert '公平场不足' in report
+
+
+def test_score_candidate_promotes_flash_crash_short_when_fair_and_breaking_down():
+    scored = score_candidate({
+        'symbol': 'DUMP',
+        'price_change_1h_pct': -12.0,
+        'return_1h_pct': -12.0,
+        'return_24h_pct': 58.0,
+        'range_position_24h_pct': 86.0,
+        'volume_change_1h_pct': 220.0,
+        'volume_1h_vs_24h_avg_pct': 120.0,
+        'oi_change_1h_pct': 30.0,
+        'funding_rate_pct': 0.035,
+        'long_liq_1h_usd': 360000,
+        'short_liq_1h_usd': 25000,
+        'depth_usd': 380000,
+        'spread_pct': 0.04,
+        'atr_1h_pct': 4.0,
+        'binance_hype_rank': 16,
+        'local_history_ready': True,
+    })
+
+    assert scored['state'] == 'FLASH_CRASH_SHORT'
+    assert scored['direction'] == '偏空'
+    assert scored['strategy'] == '做空/闪崩'
+    assert scored['counterparty_fuel_score'] >= 60
+    assert scored['fair_game'] is True
+    assert scored['score'] >= 70
 
 def test_report_renders_state_with_chinese_note():
     scored = score_candidate({

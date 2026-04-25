@@ -77,6 +77,33 @@ def test_build_paper_trade_rows_supports_short_breakdown_plan():
     assert row['take_profit_1_price'] < row['entry_ref_price']
     assert row['take_profit_2_price'] < row['take_profit_1_price']
 
+def test_build_paper_trade_rows_records_flash_crash_short_context():
+    scan = _scan([
+        {
+            'symbol': 'DUMP',
+            'state': 'FLASH_CRASH_SHORT',
+            'model': '妖币高位破位闪崩空',
+            'direction': '偏空',
+            'strategy': '做空/闪崩',
+            'score': 78,
+            'last_price': 1.5,
+            'atr_1h_pct': 5.0,
+            'local_history_ready': True,
+            'counterparty_fuel_score': 82,
+            'counterparty_fuel_direction': 'longs_as_fuel',
+            'fair_game': True,
+            'fair_game_score': 10,
+        },
+    ])
+
+    row = build_paper_trade_rows(scan, now_ts=1700000200, min_score=50)[0]
+
+    assert row['side'] == 'short'
+    assert row['state'] == 'FLASH_CRASH_SHORT'
+    assert row['counterparty_fuel_score'] == 82
+    assert row['counterparty_fuel_direction'] == 'longs_as_fuel'
+    assert row['fair_game'] is True
+    assert row['take_profit_1_price'] < row['entry_ref_price']
 
 def test_append_paper_trades_from_scan_dedupes_existing_open_trade(tmp_path):
     ledger = tmp_path / 'paper_trades.jsonl'
