@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Runtime market data / reports
+arya_signal_system/data/
+arya_signal_system/runs/
+*.sqlite
+*.db
+
+# Secrets / env
+.env
+*.env
+.env.*
+*.key
+*.pem
+*.token
+
+# Obsidian noise
+.obsidian/workspace*.json
+.trash/

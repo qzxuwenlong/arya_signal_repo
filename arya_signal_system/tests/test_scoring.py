@@ -1,0 +1,78 @@
+import json
+from pathlib import Path
+
+from src.scoring import classify_signal, score_candidate, normalize_symbol
+from src.report import render_markdown_report
+
+
+def test_normalize_symbol_accepts_okx_swap_and_plain_symbols():
+    assert normalize_symbol('BTC-USDT-SWAP') == 'BTC'
+    assert normalize_symbol('wif') == 'WIF'
+    assert normalize_symbol('BOMEUSDT') == 'BOME'
+
+
+def test_squeeze_active_scores_high_when_oi_liquidation_and_hype_align():
+    candidate = {
+        'symbol': 'TEST',
+        'price_change_1h_pct': 8.0,
+        'volume_change_1h_pct': 150.0,
+        'oi_change_1h_pct': 35.0,
+        'funding_rate_pct': 0.018,
+        'long_liq_1h_usd': 10000,
+        'short_liq_1h_usd': 280000,
+        'depth_usd': 250000,
+        'spread_pct': 0.04,
+        'binance_hype_rank': 8,
+        'smart_money_count': 4,
+        'top10_holder_pct': 18,
+    }
+    scored = score_candidate(candidate)
+    assert scored['score'] >= 70
+    assert scored['state'] == 'SQUEEZE_ACTIVE'
+    assert scored['direction'] == '偏多'
+    assert any('爆空' in r or '空头爆仓' in r for r in scored['reasons'])
+
+
+def test_grid_allowed_when_volatility_and_depth_ok_but_no_squeeze():
+    candidate = {
+        'symbol': 'RANGE',
+        'price_change_1h_pct': 1.2,
+        'volume_change_1h_pct': 35.0,
+        'oi_change_1h_pct': 5.0,
+        'funding_rate_pct': 0.004,
+        'long_liq_1h_usd': 20000,
+        'short_liq_1h_usd': 25000,
+        'depth_usd': 180000,
+        'spread_pct': 0.05,
+        'binance_hype_rank': 28,
+    }
+    scored = score_candidate(candidate)
+    assert scored['state'] == 'GRID_ALLOWED'
+    assert scored['strategy'] == '网格/震荡'
+
+
+def test_exit_risk_when_funding_extreme_and_oi_fake_suspected():
+    candidate = {
+        'symbol': 'DANGER',
+        'price_change_1h_pct': 0.3,
+        'volume_change_1h_pct': 5.0,
+        'oi_change_1h_pct': 45.0,
+        'funding_rate_pct': 0.16,
+        'long_liq_1h_usd': 1000,
+        'short_liq_1h_usd': 1200,
+        'depth_usd': 30000,
+        'spread_pct': 0.5,
+        'top10_holder_pct': 62,
+    }
+    scored = score_candidate(candidate)
+    assert scored['state'] in {'EXIT_RISK', 'OI_FAKE_SUSPECT'}
+    assert scored['allow_trade'] is False
+
+
+def test_report_contains_manual_confirmation_and_no_auto_order():
+    scored = score_candidate({'symbol':'TEST','score':80,'depth_usd':200000,'spread_pct':0.03,'oi_change_1h_pct':20,'short_liq_1h_usd':100000,'long_liq_1h_usd':1000})
+    report = render_markdown_report([scored], source_status={'okx':'ok','binance_web3':'ok','coinank':'missing_key'})
+    assert '不自动下单' in report
+    assert '人工确认' in report
+    assert 'TEST' in report
+    assert 'CoinAnk' in report
