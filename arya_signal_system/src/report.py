@@ -21,6 +21,8 @@ STATE_NOTES: Dict[str, str] = {
     'NO_CHASE_NEGATIVE_FUNDING': '负费率诱多，不追多：缺少 OI/价格/成交持续确认',
     'NO_CHASE_GUILLOTINE': '断头线风险，不追涨：高位放量急砸，等待结构修复',
     'NO_TRADE_UNFAIR_GAME': '公平场不足，禁止交易：深度差/点差大/插针或庄控风险高',
+    'EARLY_DEMON_TREND': '早期妖币观察：注意力刚流入，只进观察级 paper，不污染主信号',
+    'SECTOR_LAGGARD_OBSERVE': '板块后排观察：不抢后排补涨，只记录观察样本',
 }
 
 
@@ -66,6 +68,15 @@ def render_markdown_report(candidates: Iterable[Dict[str, Any]], source_status: 
             lines.append(
                 f'- 对手盘燃料/公平场：fuel {float(c.get("counterparty_fuel_score") or 0):.0f}({c.get("counterparty_fuel_direction", "unconfirmed")})｜fair {"yes" if c.get("fair_game") else "no"}({float(c.get("fair_game_score") or 0):.0f})｜闪崩空 {"yes" if c.get("flash_crash_short") else "no"}'
             )
+        if 'anti_consensus_score' in c or 'early_demon_trend_score' in c:
+            lines.append(
+                f'- 第一性原理观察层：反共识 {float(c.get("anti_consensus_score") or 0):.0f}({c.get("anti_consensus_direction", "neutral")})｜早期妖币 {float(c.get("early_demon_trend_score") or 0):.0f}｜板块 {c.get("sector_filter", "unknown")}｜观察层 {c.get("paper_observation_tier", "none")}'
+            )
+        invalidation = c.get('thesis_invalidation') or []
+        if invalidation:
+            lines.append('- 失效条件：')
+            for item in invalidation[:3]:
+                lines.append(f'  - {item}')
         if c.get('coinank_status'):
             lines.append(
                 f'- 衍生品增强：CoinAnk {c.get("coinank_status")}｜爆多1h {float(c.get("long_liq_1h_usd") or 0):.0f}｜爆空1h {float(c.get("short_liq_1h_usd") or 0):.0f}｜买卖比 {float(c.get("buy_sell_ratio_1h") or 0):.2f}'

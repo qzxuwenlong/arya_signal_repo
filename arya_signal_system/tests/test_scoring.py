@@ -10,6 +10,9 @@ from src.scoring import (
     compute_counterparty_fuel_score,
     assess_fair_game_filter,
     detect_flash_crash_short_model,
+    compute_anti_consensus_score,
+    compute_early_demon_trend_score,
+    assess_sector_leader_filter,
 )
 from src.report import render_markdown_report
 
@@ -382,6 +385,127 @@ def test_score_candidate_promotes_flash_crash_short_when_fair_and_breaking_down(
     assert scored['counterparty_fuel_score'] >= 60
     assert scored['fair_game'] is True
     assert scored['score'] >= 70
+
+
+
+def test_anti_consensus_score_identifies_crowded_shorts_as_long_fuel():
+    anti = compute_anti_consensus_score({
+        'symbol': 'REVERSAL',
+        'funding_rate_pct': -0.045,
+        'oi_change_1h_pct': 28.0,
+        'price_change_1h_pct': 1.6,
+        'volume_change_1h_pct': 95.0,
+        'buy_sell_ratio_1h': 1.35,
+        'signal_persistence_count': 3,
+    })
+
+    assert anti['anti_consensus_direction'] == 'fade_crowded_shorts'
+    assert anti['anti_consensus_score'] >= 70
+    assert any('反共识' in r or '空头拥挤' in r for r in anti['reasons'])
+
+
+def test_early_demon_trend_detects_attention_inflow_before_tail_risk():
+    demon = compute_early_demon_trend_score({
+        'symbol': 'EARLY',
+        'return_24h_pct': 18.0,
+        'price_change_1h_pct': 4.2,
+        'volume_change_1h_pct': 130.0,
+        'oi_change_1h_pct': 18.0,
+        'range_position_24h_pct': 58.0,
+        'atr_1h_pct': 3.4,
+        'binance_hype_rank': 18,
+        'depth_usd': 240000,
+        'spread_pct': 0.05,
+    })
+
+    assert demon['early_demon_trend'] is True
+    assert demon['early_demon_trend_score'] >= 70
+    assert any('早期妖币' in r or '注意力' in r for r in demon['reasons'])
+
+
+def test_sector_leader_filter_downgrades_lagging_same_sector_names():
+    leader = assess_sector_leader_filter({'symbol': 'LEAD', 'sector_rank': 1, 'sector': 'ai-meme'})
+    laggard = assess_sector_leader_filter({'symbol': 'LAG', 'sector_rank': 5, 'sector': 'ai-meme'})
+
+    assert leader['sector_leader'] is True
+    assert leader['sector_filter'] == 'leader'
+    assert laggard['sector_leader'] is False
+    assert laggard['sector_filter'] == 'laggard_observe_only'
+    assert laggard['score_adjustment'] < 0
+
+
+def test_score_candidate_marks_early_demon_as_observation_not_main_entry():
+    scored = score_candidate({
+        'symbol': 'EARLY',
+        'price_change_1h_pct': 4.2,
+        'return_24h_pct': 18.0,
+        'volume_change_1h_pct': 135.0,
+        'oi_change_1h_pct': 18.0,
+        'funding_rate_pct': 0.006,
+        'long_liq_1h_usd': 22000,
+        'short_liq_1h_usd': 35000,
+        'depth_usd': 260000,
+        'spread_pct': 0.05,
+        'range_position_24h_pct': 56.0,
+        'atr_1h_pct': 3.0,
+        'binance_hype_rank': 14,
+        'sector_rank': 1,
+        'local_history_ready': True,
+    })
+
+    assert scored['state'] == 'EARLY_DEMON_TREND'
+    assert scored['paper_observation_tier'] == 'observe'
+    assert scored['allow_trade'] is False
+    assert scored['early_demon_trend'] is True
+    assert scored['thesis_invalidation']
+
+
+def test_sector_laggard_is_downgraded_to_observe_only_even_when_hot():
+    scored = score_candidate({
+        'symbol': 'LAG',
+        'price_change_1h_pct': 5.0,
+        'return_24h_pct': 22.0,
+        'volume_change_1h_pct': 150.0,
+        'oi_change_1h_pct': 20.0,
+        'funding_rate_pct': 0.008,
+        'long_liq_1h_usd': 20000,
+        'short_liq_1h_usd': 30000,
+        'depth_usd': 250000,
+        'spread_pct': 0.05,
+        'range_position_24h_pct': 52.0,
+        'atr_1h_pct': 3.0,
+        'binance_hype_rank': 12,
+        'sector': 'ai-meme',
+        'sector_rank': 4,
+    })
+
+    assert scored['sector_filter'] == 'laggard_observe_only'
+    assert scored['paper_observation_tier'] == 'observe'
+    assert scored['state'] in {'SECTOR_LAGGARD_OBSERVE', 'EARLY_DEMON_TREND'}
+    assert scored['score'] <= 65
+
+
+def test_report_renders_observation_tier_and_thesis_invalidation():
+    scored = score_candidate({
+        'symbol': 'OBS',
+        'price_change_1h_pct': 4.0,
+        'return_24h_pct': 16.0,
+        'volume_change_1h_pct': 120.0,
+        'oi_change_1h_pct': 17.0,
+        'funding_rate_pct': 0.005,
+        'long_liq_1h_usd': 20000,
+        'short_liq_1h_usd': 30000,
+        'depth_usd': 260000,
+        'spread_pct': 0.05,
+        'range_position_24h_pct': 50.0,
+        'atr_1h_pct': 3.0,
+        'binance_hype_rank': 11,
+    })
+    report = render_markdown_report([scored])
+
+    assert '观察层' in report
+    assert '失效条件' in report
+    assert 'EARLY_DEMON_TREND' in report
 
 def test_report_renders_state_with_chinese_note():
     scored = score_candidate({

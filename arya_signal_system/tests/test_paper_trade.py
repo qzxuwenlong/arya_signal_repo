@@ -132,3 +132,43 @@ def test_append_paper_trades_from_scan_dedupes_existing_open_trade(tmp_path):
     saved = json.loads(lines[0])
     assert saved['symbol'] == 'BOME'
     assert saved['status'] == 'open'
+
+
+
+def test_build_paper_trade_rows_records_observation_tier_without_main_entry_pollution():
+    scan = _scan([
+        {
+            'symbol': 'EARLY',
+            'state': 'EARLY_DEMON_TREND',
+            'model': '第一性原理-早期妖币观察',
+            'direction': '偏多观察',
+            'strategy': '观察级paper/等待二次确认',
+            'score': 62,
+            'last_price': 0.25,
+            'atr_1h_pct': 3.0,
+            'local_history_ready': True,
+            'paper_observation_tier': 'observe',
+            'anti_consensus_score': 45,
+            'early_demon_trend_score': 78,
+            'sector_filter': 'leader',
+            'thesis_invalidation': ['1h 跌破启动价 4% 且成交继续放大'],
+        },
+        {
+            'symbol': 'BLOCKED',
+            'state': 'NO_TRADE_UNFAIR_GAME',
+            'score': 80,
+            'last_price': 1.0,
+            'paper_observation_tier': 'none',
+        },
+    ])
+
+    rows = build_paper_trade_rows(scan, now_ts=1700000400, min_score=50)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row['trade_id'] == '1700000400-EARLY-EARLY_DEMON_TREND-observe'
+    assert row['mode'] == 'paper_observation'
+    assert row['paper_observation_tier'] == 'observe'
+    assert row['side'] == 'long'
+    assert row['early_demon_trend_score'] == 78
+    assert row['thesis_invalidation'] == ['1h 跌破启动价 4% 且成交继续放大']

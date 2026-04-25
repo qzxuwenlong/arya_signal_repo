@@ -218,6 +218,161 @@ def detect_flash_crash_short_model(candidate: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+
+def compute_anti_consensus_score(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    funding = _num(candidate.get('funding_rate_pct'))
+    oi = _num(candidate.get('oi_change_1h_pct'))
+    price = _num(candidate.get('price_change_1h_pct') or candidate.get('return_1h_pct'))
+    vol = _num(candidate.get('volume_change_1h_pct') or candidate.get('volume_1h_vs_24h_avg_pct'))
+    buy_sell = _num(candidate.get('buy_sell_ratio_1h'))
+    persistence = _num(candidate.get('signal_persistence_count'))
+    top_account_lsr = _num(candidate.get('top_account_long_short_ratio'))
+    top_position_lsr = _num(candidate.get('top_position_long_short_ratio'))
+    score = 0.0
+    direction = 'neutral'
+    reasons: List[str] = []
+    risks: List[str] = []
+
+    crowded_shorts = funding <= -0.01 and oi >= 12 and price >= -1.5 and vol >= 40
+    crowded_longs = funding >= 0.02 and oi >= 12 and price <= 0 and vol >= 40
+    if crowded_shorts:
+        direction = 'fade_crowded_shorts'
+        score += 45
+        reasons.append('反共识：负费率下空头拥挤，但价格抗跌/转强，空头可能成为燃料')
+    elif crowded_longs:
+        direction = 'fade_crowded_longs'
+        score += 40
+        reasons.append('反共识：正费率下多头拥挤且价格转弱，多头可能成为燃料')
+
+    if oi >= 20:
+        score += 10
+        reasons.append('OI 持续扩张，市场共识仓位变重')
+    if vol >= 80:
+        score += 10
+        reasons.append('成交放大，错误共识进入可被收割阶段')
+    if persistence >= 2:
+        score += 10
+        reasons.append('反共识结构多次持续，不是单点噪音')
+    if buy_sell >= 1.3 and direction == 'fade_crowded_shorts':
+        score += 8
+        reasons.append('主动买盘开始反向承接空头共识')
+    elif 0 < buy_sell <= 0.75 and direction == 'fade_crowded_longs':
+        score += 8
+        reasons.append('主动卖盘开始反向承接多头共识')
+    if top_account_lsr >= 2.0 or top_position_lsr >= 2.0:
+        risks.append('大户多头拥挤，反共识做多需要降权')
+        if direction == 'fade_crowded_shorts':
+            score -= 8
+    if 0 < top_account_lsr <= 0.5 or 0 < top_position_lsr <= 0.5:
+        risks.append('大户空头拥挤，反共识做空需要降权')
+        if direction == 'fade_crowded_longs':
+            score -= 8
+
+    return {
+        'anti_consensus_score': round(_clamp(score)),
+        'anti_consensus_direction': direction,
+        'reasons': reasons,
+        'risks': risks,
+    }
+
+
+def compute_early_demon_trend_score(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    ret_24h = _num(candidate.get('return_24h_pct'))
+    price = _num(candidate.get('price_change_1h_pct') or candidate.get('return_1h_pct'))
+    vol = _num(candidate.get('volume_change_1h_pct') or candidate.get('volume_1h_vs_24h_avg_pct'))
+    oi = _num(candidate.get('oi_change_1h_pct'))
+    range_pos = _num(candidate.get('range_position_24h_pct'), 50.0)
+    atr = _num(candidate.get('atr_1h_pct'))
+    hype_rank = _num(candidate.get('binance_hype_rank'), 999)
+    depth = _num(candidate.get('depth_usd'))
+    spread = _num(candidate.get('spread_pct'))
+    score = 0.0
+    reasons: List[str] = []
+    risks: List[str] = []
+
+    if 8 <= ret_24h <= 35:
+        score += 18
+        reasons.append('早期妖币：24h 已启动但尚未进入极端尾部')
+    elif ret_24h > 45:
+        score -= 25
+        risks.append('涨幅过大，可能已进入尾部收网区')
+    if 2 <= price <= 9:
+        score += 16
+        reasons.append('1h 转强但未出现末端暴拉')
+    if vol >= 80:
+        score += 16
+        reasons.append('注意力/成交正在流入')
+    if 10 <= oi <= 35:
+        score += 14
+        reasons.append('OI 增长适中，燃料形成但未极端拥挤')
+    elif oi > 45:
+        score -= 12
+        risks.append('OI 过热，容易从早期机会变成尾部风险')
+    if 25 <= range_pos <= 70:
+        score += 12
+        reasons.append('价格处于区间中上部，尚非高位追尾')
+    elif range_pos > 82:
+        score -= 18
+        risks.append('区间位置太高，禁止当早期妖币追')
+    if 0 < atr <= 5:
+        score += 8
+        reasons.append('ATR 可控，观察级止损有意义')
+    elif atr >= 8:
+        score -= 12
+        risks.append('ATR 过高，插针风险大')
+    if hype_rank <= 25:
+        score += 10
+        reasons.append('热度入口靠前，叙事/注意力有传播可能')
+    if depth >= 100_000 and 0 < spread <= 0.15:
+        score += 8
+        reasons.append('深度/点差支持观察级跟踪')
+
+    score = round(_clamp(score))
+    return {
+        'early_demon_trend': score >= 65 and not (ret_24h > 45 or range_pos > 82 or atr >= 8),
+        'early_demon_trend_score': score,
+        'reasons': reasons,
+        'risks': risks,
+    }
+
+
+def assess_sector_leader_filter(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    rank = _num(candidate.get('sector_rank') or candidate.get('sector_leader_rank'))
+    sector = str(candidate.get('sector') or candidate.get('narrative') or '')
+    reasons: List[str] = []
+    risks: List[str] = []
+    if rank <= 0:
+        return {'sector_filter': 'unknown', 'sector_leader': False, 'score_adjustment': 0, 'reasons': reasons, 'risks': risks}
+    if rank <= 2:
+        reasons.append(f'板块龙头优先：{sector or "unknown"} rank {rank:.0f}')
+        return {'sector_filter': 'leader', 'sector_leader': True, 'score_adjustment': 6, 'reasons': reasons, 'risks': risks}
+    risks.append(f'板块后排：{sector or "unknown"} rank {rank:.0f}，只做观察，不抢后排补涨')
+    return {'sector_filter': 'laggard_observe_only', 'sector_leader': False, 'score_adjustment': -18, 'reasons': reasons, 'risks': risks}
+
+
+def build_thesis_invalidation(candidate: Dict[str, Any]) -> List[str]:
+    state = str(candidate.get('state') or '')
+    side = str(candidate.get('direction') or '')
+    invalidation: List[str] = []
+    if state in {'LONG_SQUEEZE', 'LONG_PULLBACK', 'EARLY_DEMON_TREND'} or '多' in side:
+        invalidation.extend([
+            '1h 价格跌回启动位下方且成交继续放大',
+            'OI 继续增加但价格不再抗跌，燃料从爆空变成诱多',
+            '盘口深度跌破 100k 或点差扩大到 0.25% 以上',
+        ])
+    elif state in {'SHORT_BREAKDOWN', 'SHORT_ALERT', 'FLASH_CRASH_SHORT'} or '空' in side:
+        invalidation.extend([
+            '1h 价格收回破位位上方且空头爆仓开始放大',
+            '主动买盘恢复并带动 OI 下降，杀多逻辑结束',
+            '盘口深度跌破 100k 或点差扩大到 0.25% 以上',
+        ])
+    else:
+        invalidation.extend([
+            '核心触发因子连续两轮监控消失',
+            '公平场恶化：深度不足、点差扩大或插针增多',
+        ])
+    return invalidation
+
 def normalize_symbol(symbol: str) -> str:
     s = (symbol or '').upper().strip()
     for suffix in ('-USDT-SWAP', '-USDT', 'USDT', 'USD'):
@@ -339,6 +494,9 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     fuel = compute_counterparty_fuel_score(c)
     fair_game = assess_fair_game_filter({**c, 'guillotine_candle_risk': guillotine['guillotine_candle_risk']})
     flash_crash = detect_flash_crash_short_model(c)
+    anti_consensus = compute_anti_consensus_score(c)
+    early_demon = compute_early_demon_trend_score(c)
+    sector_filter = assess_sector_leader_filter(c)
     c['funding_quality'] = funding_quality['funding_quality']
     c['funding_quality_score'] = funding_quality['funding_quality_score']
     c['signal_persistence_score'] = persistence_score
@@ -349,6 +507,12 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     c['fair_game'] = fair_game['fair_game']
     c['fair_game_score'] = fair_game['fair_game_score']
     c['flash_crash_short'] = flash_crash['flash_crash_short']
+    c['anti_consensus_score'] = anti_consensus['anti_consensus_score']
+    c['anti_consensus_direction'] = anti_consensus['anti_consensus_direction']
+    c['early_demon_trend'] = early_demon['early_demon_trend']
+    c['early_demon_trend_score'] = early_demon['early_demon_trend_score']
+    c['sector_filter'] = sector_filter['sector_filter']
+    c['sector_leader'] = sector_filter['sector_leader']
 
     if depth >= 100_000 and spread <= 0.10:
         score += 15
@@ -412,6 +576,23 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         score += flash_crash['score_bonus']
         reasons.extend(flash_crash['reasons'])
 
+    if anti_consensus['anti_consensus_score'] >= 65:
+        score += 8
+        reasons.extend(anti_consensus['reasons'][:2])
+    elif anti_consensus['anti_consensus_score'] >= 45:
+        score += 4
+        reasons.extend(anti_consensus['reasons'][:1])
+    risks.extend(anti_consensus['risks'])
+
+    if early_demon['early_demon_trend_score'] >= 65:
+        score += 10
+        reasons.extend(early_demon['reasons'][:3])
+    risks.extend(early_demon['risks'])
+
+    score += sector_filter['score_adjustment']
+    reasons.extend(sector_filter['reasons'])
+    risks.extend(sector_filter['risks'])
+
     buy_sell_ratio = _num(c.get('buy_sell_ratio_1h'))
     top_account_lsr = _num(c.get('top_account_long_short_ratio'))
     top_position_lsr = _num(c.get('top_position_long_short_ratio'))
@@ -447,11 +628,19 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         risks.append('Top10 持仓过度集中')
 
     cls = classify_signal(c)
+    if early_demon['early_demon_trend'] and cls['state'] in {'GRID_ALLOWED', 'WATCH_ONLY'}:
+        cls = {'state': 'EARLY_DEMON_TREND', 'model': '第一性原理-早期妖币观察', 'direction': '偏多观察', 'strategy': '观察级paper/等待二次确认', 'allow_trade': False}
+    if sector_filter['sector_filter'] == 'laggard_observe_only' and cls['state'] == 'EARLY_DEMON_TREND':
+        cls = {'state': 'SECTOR_LAGGARD_OBSERVE', 'model': '板块后排观察过滤', 'direction': '只观察', 'strategy': '观察级paper/不抢后排', 'allow_trade': False}
     if cls['state'] in {'LONG_SQUEEZE', 'SQUEEZE_ACTIVE', 'SHORT_BREAKDOWN', 'SHORT_ALERT', 'FLASH_CRASH_SHORT'}:
         score += 10
     elif cls['state'] == 'LONG_PULLBACK':
         score += 25
         reasons.append('强势币深回调后放量回拉，符合回调试多模型')
+    elif cls['state'] in {'EARLY_DEMON_TREND'}:
+        score = min(max(score, 55), 72)
+    elif cls['state'] in {'SECTOR_LAGGARD_OBSERVE'}:
+        score = min(score, 65)
     elif cls['state'] in {'EXIT_RISK', 'NO_TRADE_FAKE_OI', 'OI_FAKE_SUSPECT', 'SHORT_TAIL_RISK', 'NO_CHASE_NEGATIVE_FUNDING', 'NO_CHASE_GUILLOTINE', 'NO_TRADE_UNFAIR_GAME'}:
         score = min(score, 45)
 
@@ -459,6 +648,8 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     c['score'] = max(0, min(100, round(score)))
     c['reasons'] = reasons
     c['risks'] = risks
+    c['paper_observation_tier'] = 'observe' if c.get('state') in {'EARLY_DEMON_TREND', 'SECTOR_LAGGARD_OBSERVE'} else 'main' if c.get('state') in {'LONG_SQUEEZE', 'LONG_PULLBACK', 'SHORT_BREAKDOWN', 'SHORT_ALERT', 'TREND_ALERT', 'FLASH_CRASH_SHORT'} else 'none'
+    c['thesis_invalidation'] = build_thesis_invalidation(c)
     c['manual_confirmation_required'] = True
     c['allow_trade'] = False
     return c

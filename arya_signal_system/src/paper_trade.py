@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Set, Tuple
 
+PAPER_OBSERVATION_STATES = {'EARLY_DEMON_TREND', 'SECTOR_LAGGARD_OBSERVE'}
+
 PAPER_ACTIONABLE_STATES = {
     'LONG_SQUEEZE',
     'LONG_PULLBACK',
@@ -34,6 +36,8 @@ def _side_for_state(candidate: Dict[str, Any]) -> str | None:
     strategy = str(candidate.get('strategy') or '')
     if state in SHORT_STATES or '空' in direction or '做空' in strategy:
         return 'short'
+    if state in PAPER_OBSERVATION_STATES and ('偏多' in direction or '多' in strategy or state == 'EARLY_DEMON_TREND'):
+        return 'long'
     if state in LONG_STATES or '多' in direction or '做多' in strategy:
         return 'long'
     return None
@@ -73,9 +77,11 @@ def build_paper_trade_rows(scan: Dict[str, Any], *, now_ts: int | None = None, m
         history_ready = c.get('local_history_ready', True)
         entry = _num(c.get('last_price') or c.get('price'))
         side = _side_for_state(c)
+        observation_tier = str(c.get('paper_observation_tier') or 'none')
+        is_observation = state in PAPER_OBSERVATION_STATES and observation_tier == 'observe'
         if state in NO_ENTRY_STATES:
             continue
-        if state not in PAPER_ACTIONABLE_STATES:
+        if state not in PAPER_ACTIONABLE_STATES and not is_observation:
             continue
         if score < min_score or not history_ready or entry <= 0 or side is None:
             continue
@@ -83,8 +89,8 @@ def build_paper_trade_rows(scan: Dict[str, Any], *, now_ts: int | None = None, m
         plan = _trade_plan(entry, side, risk_pct)
         symbol = str(c.get('symbol') or 'UNKNOWN').upper()
         row: Dict[str, Any] = {
-            'trade_id': f'{now_ts}-{symbol}-{state}',
-            'mode': 'paper',
+            'trade_id': f'{now_ts}-{symbol}-{state}-observe' if is_observation else f'{now_ts}-{symbol}-{state}',
+            'mode': 'paper_observation' if is_observation else 'paper',
             'status': 'open',
             'created_ts': now_ts,
             'created_at_utc': time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(now_ts)),
@@ -110,6 +116,12 @@ def build_paper_trade_rows(scan: Dict[str, Any], *, now_ts: int | None = None, m
             'fair_game': c.get('fair_game'),
             'fair_game_score': _num(c.get('fair_game_score')),
             'flash_crash_short': bool(c.get('flash_crash_short')),
+            'paper_observation_tier': observation_tier,
+            'anti_consensus_score': _num(c.get('anti_consensus_score')),
+            'anti_consensus_direction': c.get('anti_consensus_direction'),
+            'early_demon_trend_score': _num(c.get('early_demon_trend_score')),
+            'sector_filter': c.get('sector_filter'),
+            'thesis_invalidation': c.get('thesis_invalidation') or [],
             'local_history_ready': bool(history_ready),
             'order_execution': source_status.get('order_execution', 'disabled'),
             'notes': 'paper only; no API order; manual confirmation required for any real trade',
