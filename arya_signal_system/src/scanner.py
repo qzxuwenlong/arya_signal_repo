@@ -13,7 +13,9 @@ from .data_sources import (
     coinank_status,
     fetch_binance_rank,
     fetch_okx_instruments,
+    fetch_okx_tickers,
     load_knowledge_summary,
+    select_okx_opportunity_pool,
 )
 from .report import render_markdown_report
 from .scoring import normalize_symbol, score_candidate
@@ -58,26 +60,42 @@ def run_scan(limit: int = 8, use_live: bool = True) -> Dict[str, Any]:
     source_status['binance_web3'] = binance.status
     rank_lookup = binance_rank_map(binance.data if isinstance(binance.data, list) else [])
 
-    inst_result = fetch_okx_instruments(limit=120) if use_live else SourceResult('disabled', [])
+    inst_result = fetch_okx_instruments(limit=1000) if use_live else SourceResult('disabled', [])
     source_status['okx'] = inst_result.status
+    ticker_result = fetch_okx_tickers() if use_live else SourceResult('disabled', [])
+    source_status['okx_tickers'] = ticker_result.status
 
-    watchlist = list(DEFAULT_WATCHLIST)
-    if inst_result.data:
-        live_ids = {r.get('instId') for r in inst_result.data}
-        watchlist = [x for x in watchlist if x in live_ids]
-        for r in inst_result.data:
-            inst_id = r.get('instId')
-            if inst_id and inst_id not in watchlist and len(watchlist) < limit:
-                watchlist.append(inst_id)
-    watchlist = watchlist[:limit]
+    if use_live and ticker_result.data:
+        opportunity_pool = select_okx_opportunity_pool(
+            inst_result.data if isinstance(inst_result.data, list) else [],
+            ticker_result.data,
+            rank_lookup=rank_lookup,
+            limit=limit,
+        )
+        watchlist = [x['inst_id'] for x in opportunity_pool]
+        source_status['okx_selection'] = f'dynamic_top_{len(watchlist)}'
+    else:
+        opportunity_pool = []
+        watchlist = list(DEFAULT_WATCHLIST)[:limit]
+        source_status['okx_selection'] = 'offline_default_watchlist' if not use_live else 'fallback_default_watchlist'
+
+    selection_by_id = {x['inst_id']: x for x in opportunity_pool}
 
     raw_candidates: List[Dict[str, Any]] = []
     for inst_id in watchlist:
         try:
             c = build_okx_candidate(inst_id) if use_live else {'symbol': inst_id}
+            if inst_id in selection_by_id:
+                c.update({k: v for k, v in selection_by_id[inst_id].items() if k not in {'symbol'}})
             c = merge_binance_signal(c, rank_lookup)
             if market_store is not None and 'error' not in c:
+                exchange_metrics = {
+                    'price_change_1h_pct': c.get('price_change_1h_pct', 0.0),
+                    'volume_change_1h_pct': c.get('volume_change_1h_pct', 0.0),
+                }
                 c = enrich_candidate_with_local_history(c, store=market_store, now_ts=now_ts, exchange='okx')
+                if not c.get('local_history_ready'):
+                    c.update(exchange_metrics)
                 c.setdefault('sources', []).append('local_market_db')
             raw_candidates.append(c)
         except Exception as e:

@@ -42,6 +42,78 @@ def fetch_okx_instruments(limit: int = 80) -> SourceResult:
         return SourceResult(f'error:{type(e).__name__}', [])
 
 
+def fetch_okx_tickers(inst_type: str = 'SWAP') -> SourceResult:
+    try:
+        payload = _request_json(f'https://www.okx.com/api/v5/market/tickers?instType={urllib.parse.quote(inst_type)}', timeout=12)
+        rows = payload.get('data') or []
+        usdt = [r for r in rows if str(r.get('instId', '')).endswith('-USDT-SWAP')]
+        return SourceResult('ok', usdt)
+    except Exception as e:
+        return SourceResult(f'error:{type(e).__name__}', [])
+
+
+def _ticker_volume_usd(ticker: Dict[str, Any]) -> float:
+    quote = _f(ticker.get('volCcyQuote24h'))
+    if quote:
+        return quote
+    # OKX swap tickers do not always expose volCcyQuote24h consistently.
+    # For preselection we prefer a stable activity proxy over undercounting low-price memes.
+    return _f(ticker.get('volCcy24h'))
+
+
+def _ticker_change_24h_pct(ticker: Dict[str, Any]) -> float:
+    last = _f(ticker.get('last'))
+    open24h = _f(ticker.get('open24h'))
+    return ((last - open24h) / open24h * 100) if last and open24h else 0.0
+
+
+def select_okx_opportunity_pool(
+    instruments: List[dict],
+    tickers: List[dict],
+    *,
+    rank_lookup: Optional[Dict[str, Dict[str, Any]]] = None,
+    limit: int = 30,
+    min_24h_volume_usd: float = 50_000,
+) -> List[Dict[str, Any]]:
+    """Select a dynamic OKX USDT-swap opportunity pool from live market tickers.
+
+    This is a cheap prefilter: it avoids deep OI/book/funding calls for the whole market,
+    while still escaping the old fixed watchlist trap.
+    """
+    rank_lookup = rank_lookup or {}
+    live_ids = {r.get('instId') for r in instruments if str(r.get('instId', '')).endswith('-USDT-SWAP') and r.get('state', 'live') == 'live'}
+    if not live_ids:
+        live_ids = {r.get('instId') for r in tickers if str(r.get('instId', '')).endswith('-USDT-SWAP')}
+    ticker_by_id = {r.get('instId'): r for r in tickers if r.get('instId') in live_ids}
+    rows: List[Dict[str, Any]] = []
+    for inst_id, ticker in ticker_by_id.items():
+        symbol = str(inst_id).replace('-USDT-SWAP', '')
+        volume_usd = _ticker_volume_usd(ticker)
+        if volume_usd < min_24h_volume_usd:
+            continue
+        change_pct = _ticker_change_24h_pct(ticker)
+        rank = rank_lookup.get(symbol, {}).get('binance_hype_rank')
+        hype_bonus = max(0.0, 35.0 - float(rank)) if rank else 0.0
+        meme_bonus = 12.0 if symbol in {'BOME', 'WIF', 'PEPE', 'ORDI', 'DOGE', 'BONK', 'FLOKI', 'SHIB', 'NEIRO'} else 0.0
+        # log10-like volume score without importing math edge cases into tests.
+        volume_score = min(45.0, len(str(int(max(volume_usd, 1)))) * 5.0)
+        volatility_score = min(35.0, abs(change_pct) * 1.5)
+        selection_score = volume_score + volatility_score + hype_bonus + meme_bonus
+        row = {
+            'inst_id': inst_id,
+            'symbol': symbol,
+            'price': _f(ticker.get('last')),
+            'change_24h_pct': round(change_pct, 6),
+            'volume_24h_usd': volume_usd,
+            'selection_score': round(selection_score, 6),
+        }
+        if rank:
+            row['binance_hype_rank'] = rank
+        rows.append(row)
+    rows.sort(key=lambda r: (-float(r.get('selection_score') or 0), -float(r.get('volume_24h_usd') or 0), str(r.get('inst_id'))))
+    return rows[:limit]
+
+
 def fetch_okx_ticker(inst_id: str) -> Dict[str, Any]:
     payload = _request_json(f'https://www.okx.com/api/v5/market/ticker?instId={urllib.parse.quote(inst_id)}', timeout=8)
     rows = payload.get('data') or []
@@ -94,22 +166,34 @@ def _depth_and_spread(book: Dict[str, Any]) -> Tuple[float, float]:
     return depth, spread_pct
 
 
-def build_okx_candidate(inst_id: str) -> Dict[str, Any]:
-    ticker = fetch_okx_ticker(inst_id)
-    candles = fetch_okx_candles(inst_id)
-    book = fetch_okx_books(inst_id)
-    oi = fetch_okx_open_interest(inst_id)
-    funding = fetch_okx_funding(inst_id)
+def build_okx_candidate_from_payloads(
+    inst_id: str,
+    ticker: Dict[str, Any],
+    candles: List[list],
+    book: Dict[str, Any],
+    oi: Dict[str, Any],
+    funding: Dict[str, Any],
+) -> Dict[str, Any]:
     depth, spread = _depth_and_spread(book)
 
     price_change = _f(ticker.get('sodUtc8'))
     if _f(ticker.get('last')) and _f(ticker.get('open24h')):
         price_change = (_f(ticker.get('last')) - _f(ticker.get('open24h'))) / _f(ticker.get('open24h')) * 100
 
+    volume_1h = 0.0
     volume_change = 0.0
+    if candles:
+        cur = candles[0]
+        # OKX candle fields: ts,o,h,l,c,vol,volCcy,volCcyQuote,confirm.
+        volume_1h = _f(cur[7] if len(cur) > 7 else (cur[6] if len(cur) > 6 else cur[5]))
     if len(candles) >= 2:
-        cur_vol = _f(candles[0][5])
-        prev_vol = _f(candles[1][5])
+        cur_vol = volume_1h
+        # Compare the latest hour with the average of the next few complete hours.
+        prev_vals = []
+        for prev in candles[1:7]:
+            prev_vals.append(_f(prev[7] if len(prev) > 7 else (prev[6] if len(prev) > 6 else prev[5])))
+        prev_vals = [v for v in prev_vals if v > 0]
+        prev_vol = sum(prev_vals) / len(prev_vals) if prev_vals else 0.0
         if prev_vol:
             volume_change = (cur_vol - prev_vol) / prev_vol * 100
 
@@ -118,6 +202,7 @@ def build_okx_candidate(inst_id: str) -> Dict[str, Any]:
         'inst_id': inst_id,
         'price': _f(ticker.get('last')),
         'price_change_1h_pct': price_change,
+        'volume_1h': volume_1h,
         'volume_change_1h_pct': volume_change,
         'oi_change_1h_pct': 0.0,
         'funding_rate_pct': _f(funding.get('fundingRate')) * 100,
@@ -128,6 +213,15 @@ def build_okx_candidate(inst_id: str) -> Dict[str, Any]:
         'open_interest_usd': _f(oi.get('oiUsd')),
         'sources': ['okx'],
     }
+
+
+def build_okx_candidate(inst_id: str) -> Dict[str, Any]:
+    ticker = fetch_okx_ticker(inst_id)
+    candles = fetch_okx_candles(inst_id)
+    book = fetch_okx_books(inst_id)
+    oi = fetch_okx_open_interest(inst_id)
+    funding = fetch_okx_funding(inst_id)
+    return build_okx_candidate_from_payloads(inst_id, ticker, candles, book, oi, funding)
 
 
 def fetch_binance_rank(chain_id: str = '56', size: int = 30) -> SourceResult:

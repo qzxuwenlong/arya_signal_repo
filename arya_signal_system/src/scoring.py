@@ -26,14 +26,18 @@ def classify_signal(candidate: Dict[str, Any]) -> Dict[str, Any]:
     vol = _num(candidate.get('volume_change_1h_pct'))
     oi = _num(candidate.get('oi_change_1h_pct'))
     funding = _num(candidate.get('funding_rate_pct'))
+    funding_extreme = abs(funding) >= 0.10
     long_liq = _num(candidate.get('long_liq_1h_usd'))
     short_liq = _num(candidate.get('short_liq_1h_usd'))
     depth = _num(candidate.get('depth_usd'))
     spread = _num(candidate.get('spread_pct'))
     top10 = _num(candidate.get('top10_holder_pct'))
 
+    if funding_extreme:
+        return {'state': 'EXIT_RISK', 'direction': '不做', 'strategy': '退出/禁止', 'allow_trade': False}
+    if depth <= 0 or spread <= 0:
+        return {'state': 'WATCH_ONLY', 'direction': '待确认', 'strategy': '只观察', 'allow_trade': False}
     liquidity_bad = depth < 50_000 or spread > 0.25
-    funding_extreme = abs(funding) >= 0.10
     liq_total = long_liq + short_liq
     oi_without_liq = oi >= 25 and liq_total < 20_000
 
