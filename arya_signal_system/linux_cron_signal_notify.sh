@@ -7,6 +7,9 @@ cd "$PROJECT_DIR"
 export HTTP_PROXY="${HTTP_PROXY:-http://127.0.0.1:7897}"
 export HTTPS_PROXY="${HTTPS_PROXY:-http://127.0.0.1:7897}"
 export ARYA_ALERT_MIN_SCORE="${ARYA_ALERT_MIN_SCORE:-50}"
+export ARYA_INCLUDE_OBSERVATION_ALERTS="${ARYA_INCLUDE_OBSERVATION_ALERTS:-1}"
+export ARYA_INCLUDE_ONCHAIN_OBSERVATIONS="${ARYA_INCLUDE_ONCHAIN_OBSERVATIONS:-1}"
+export ARYA_ONCHAIN_MIN_SCORE="${ARYA_ONCHAIN_MIN_SCORE:-20}"
 
 mkdir -p runs logs
 
@@ -25,20 +28,31 @@ if ! flock -n 9; then
   exit 0
 fi
 
-printf '%s START scan limit=%s min_score=%s\n' "$(date -Is)" "${1:-8}" "$ARYA_ALERT_MIN_SCORE" >> "$LOG_FILE"
+printf '%s START scan limit=%s min_score=%s observation_alerts=%s onchain_observations=%s\n' "$(date -Is)" "${1:-8}" "$ARYA_ALERT_MIN_SCORE" "$ARYA_INCLUDE_OBSERVATION_ALERTS" "$ARYA_INCLUDE_ONCHAIN_OBSERVATIONS" >> "$LOG_FILE"
 
-python3 -m src.scanner --limit "${1:-8}" >"$SCAN_STDOUT" 2>&1
+SCAN_ARGS=(--limit "${1:-8}")
+if [[ "$ARYA_INCLUDE_ONCHAIN_OBSERVATIONS" == "1" || "$ARYA_INCLUDE_ONCHAIN_OBSERVATIONS" == "true" || "$ARYA_INCLUDE_ONCHAIN_OBSERVATIONS" == "yes" || "$ARYA_INCLUDE_ONCHAIN_OBSERVATIONS" == "on" ]]; then
+  SCAN_ARGS+=(--include-onchain --onchain-out runs/onchainos_candidates.json)
+fi
+python3 -m src.scanner "${SCAN_ARGS[@]}" >"$SCAN_STDOUT" 2>&1
 python3 -m src.paper_trade \
   --scan-json runs/latest.json \
   --ledger "$PAPER_LEDGER" \
   --min-score "$ARYA_ALERT_MIN_SCORE" \
   >"$PAPER_STDOUT" 2>&1
-python3 -m src.advisory \
-  --scan-json runs/latest.json \
-  --out "$ADVISORY_FILE" \
-  --min-score "$ARYA_ALERT_MIN_SCORE" \
-  --include-severe-exit \
-  >"$ADVISORY_STDOUT" 2>&1
+ADVISORY_ARGS=(
+  --scan-json runs/latest.json
+  --out "$ADVISORY_FILE"
+  --min-score "$ARYA_ALERT_MIN_SCORE"
+  --include-severe-exit
+)
+if [[ "$ARYA_INCLUDE_OBSERVATION_ALERTS" == "1" || "$ARYA_INCLUDE_OBSERVATION_ALERTS" == "true" || "$ARYA_INCLUDE_OBSERVATION_ALERTS" == "yes" || "$ARYA_INCLUDE_OBSERVATION_ALERTS" == "on" ]]; then
+  ADVISORY_ARGS+=(--include-observations)
+fi
+if [[ "$ARYA_INCLUDE_ONCHAIN_OBSERVATIONS" == "1" || "$ARYA_INCLUDE_ONCHAIN_OBSERVATIONS" == "true" || "$ARYA_INCLUDE_ONCHAIN_OBSERVATIONS" == "yes" || "$ARYA_INCLUDE_ONCHAIN_OBSERVATIONS" == "on" ]]; then
+  ADVISORY_ARGS+=(--include-onchain-observations --min-onchain-score "$ARYA_ONCHAIN_MIN_SCORE")
+fi
+python3 -m src.advisory "${ADVISORY_ARGS[@]}" >"$ADVISORY_STDOUT" 2>&1
 
 if [[ ! -s "$ADVISORY_STDOUT" ]]; then
   printf '%s OK no_signal\n' "$(date -Is)" >> "$LOG_FILE"

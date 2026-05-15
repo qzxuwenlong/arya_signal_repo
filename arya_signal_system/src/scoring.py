@@ -350,6 +350,50 @@ def assess_sector_leader_filter(candidate: Dict[str, Any]) -> Dict[str, Any]:
     return {'sector_filter': 'laggard_observe_only', 'sector_leader': False, 'score_adjustment': -18, 'reasons': reasons, 'risks': risks}
 
 
+def detect_smart_short_observation(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    funding = _num(candidate.get('funding_rate_pct'))
+    oi = _num(candidate.get('oi_change_1h_pct'))
+    price = _num(candidate.get('price_change_1h_pct') or candidate.get('return_1h_pct'))
+    vol = _num(candidate.get('volume_change_1h_pct') or candidate.get('volume_1h_vs_24h_avg_pct'))
+    persistence = _num(candidate.get('signal_persistence_count'))
+    previous_state = str(candidate.get('previous_state') or candidate.get('prior_state') or '')
+    reasons: List[str] = []
+    risks: List[str] = []
+
+    negative_funding_pressure = funding <= -0.05
+    volume_expanding = vol >= 80
+    fair_depth = _num(candidate.get('depth_usd')) >= 100_000 and 0 < _num(candidate.get('spread_pct')) <= 0.15
+    if not (negative_funding_pressure and volume_expanding and fair_depth):
+        return {'state': None, 'score_floor': 0, 'reasons': reasons, 'risks': risks}
+
+    if funding <= -0.10 and oi <= -5 and price <= -4:
+        risks.append('负费率极端且 OI 大幅下降，已进入出清/收网段，禁止追空')
+        return {'state': 'EXIT_RISK', 'score_floor': 0, 'reasons': reasons, 'risks': risks}
+
+    if previous_state == 'SMART_SHORT_PROBE':
+        if price <= -1.5 and oi >= -3:
+            reasons.extend([
+                '空头试探后价格开始破位，成交继续放大',
+                'OI 未快速消失，说明空头/对手盘仍在场内，进入确认中而非追空开仓',
+            ])
+            return {'state': 'SHORT_CONFIRMING', 'score_floor': 58, 'reasons': reasons, 'risks': risks}
+        if price >= 3 and oi >= 1:
+            reasons.extend([
+                '空头试探后价格继续抗住/上破，空头更可能成为燃料',
+                '防止把拥挤空头误判成聪明钱做空',
+            ])
+            return {'state': 'SHORTS_AS_FUEL', 'score_floor': 55, 'reasons': reasons, 'risks': risks}
+
+    if oi >= 1 and price >= 0 and persistence >= 2:
+        reasons.extend([
+            '空头试探：负费率高成本下 OI 增加，价格仍抗跌/滞涨',
+            '成交放大但尚未破位，只能观察谁被迫交易，等待破位与反抽失败确认',
+        ])
+        return {'state': 'SMART_SHORT_PROBE', 'score_floor': 52, 'reasons': reasons, 'risks': risks}
+
+    return {'state': None, 'score_floor': 0, 'reasons': reasons, 'risks': risks}
+
+
 def build_thesis_invalidation(candidate: Dict[str, Any]) -> List[str]:
     state = str(candidate.get('state') or '')
     side = str(candidate.get('direction') or '')
@@ -360,10 +404,16 @@ def build_thesis_invalidation(candidate: Dict[str, Any]) -> List[str]:
             'OI 继续增加但价格不再抗跌，燃料从爆空变成诱多',
             '盘口深度跌破 100k 或点差扩大到 0.25% 以上',
         ])
-    elif state in {'SHORT_BREAKDOWN', 'SHORT_ALERT', 'FLASH_CRASH_SHORT'} or '空' in side:
+    elif state in {'SHORT_BREAKDOWN', 'SHORT_ALERT', 'FLASH_CRASH_SHORT', 'SMART_SHORT_PROBE', 'SHORT_CONFIRMING'} or '空' in side:
         invalidation.extend([
             '1h 价格收回破位位上方且空头爆仓开始放大',
             '主动买盘恢复并带动 OI 下降，杀多逻辑结束',
+            '盘口深度跌破 100k 或点差扩大到 0.25% 以上',
+        ])
+    elif state == 'SHORTS_AS_FUEL':
+        invalidation.extend([
+            '价格重新跌破试探区间且反抽失败',
+            'OI 快速下降导致空头燃料消失',
             '盘口深度跌破 100k 或点差扩大到 0.25% 以上',
         ])
     else:
@@ -416,6 +466,10 @@ def classify_signal(candidate: Dict[str, Any]) -> Dict[str, Any]:
             }
         return {'state': 'EXIT_RISK', 'model': '尾部风险', 'direction': '不做', 'strategy': '退出/禁止', 'allow_trade': False}
 
+    smart_short = detect_smart_short_observation(candidate)
+    if smart_short['state'] == 'EXIT_RISK':
+        return {'state': 'EXIT_RISK', 'model': '尾部风险', 'direction': '不做', 'strategy': '退出/禁止', 'allow_trade': False}
+
     funding_quality = assess_funding_quality(candidate)
     guillotine = detect_guillotine_candle_risk(candidate)
     fair_game = assess_fair_game_filter({**candidate, 'guillotine_candle_risk': guillotine['guillotine_candle_risk']})
@@ -423,6 +477,13 @@ def classify_signal(candidate: Dict[str, Any]) -> Dict[str, Any]:
 
     if not fair_game['fair_game']:
         return {'state': 'NO_TRADE_UNFAIR_GAME', 'model': '公平场过滤', 'direction': '不做', 'strategy': '禁止交易/等待深度修复', 'allow_trade': False}
+
+    if smart_short['state'] == 'SHORT_CONFIRMING':
+        return {'state': 'SHORT_CONFIRMING', 'model': '空头确认中', 'direction': '偏空观察', 'strategy': '高优先级观察/等待反抽失败', 'allow_trade': False}
+    if smart_short['state'] == 'SHORTS_AS_FUEL':
+        return {'state': 'SHORTS_AS_FUEL', 'model': '空头燃料观察', 'direction': '偏多观察', 'strategy': '观察/防做空/等待爆空确认', 'allow_trade': False}
+    if smart_short['state'] == 'SMART_SHORT_PROBE':
+        return {'state': 'SMART_SHORT_PROBE', 'model': '空头试探观察', 'direction': '偏空观察', 'strategy': '观察/等待破位与反抽失败确认', 'allow_trade': False}
 
     if flash_crash['flash_crash_short']:
         return {'state': 'FLASH_CRASH_SHORT', 'model': '妖币高位破位闪崩空', 'direction': '偏空', 'strategy': '做空/闪崩', 'allow_trade': False}
@@ -497,6 +558,7 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     anti_consensus = compute_anti_consensus_score(c)
     early_demon = compute_early_demon_trend_score(c)
     sector_filter = assess_sector_leader_filter(c)
+    smart_short = detect_smart_short_observation(c)
     c['funding_quality'] = funding_quality['funding_quality']
     c['funding_quality_score'] = funding_quality['funding_quality_score']
     c['signal_persistence_score'] = persistence_score
@@ -513,6 +575,7 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     c['early_demon_trend_score'] = early_demon['early_demon_trend_score']
     c['sector_filter'] = sector_filter['sector_filter']
     c['sector_leader'] = sector_filter['sector_leader']
+    c['smart_short_observation_state'] = smart_short['state'] or 'none'
 
     if depth >= 100_000 and spread <= 0.10:
         score += 15
@@ -583,6 +646,9 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         score += 4
         reasons.extend(anti_consensus['reasons'][:1])
     risks.extend(anti_consensus['risks'])
+    if smart_short['state'] in {'SMART_SHORT_PROBE', 'SHORT_CONFIRMING', 'SHORTS_AS_FUEL'}:
+        reasons.extend(smart_short['reasons'])
+        risks.extend(smart_short['risks'])
 
     if early_demon['early_demon_trend_score'] >= 65:
         score += 10
@@ -639,6 +705,8 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         reasons.append('强势币深回调后放量回拉，符合回调试多模型')
     elif cls['state'] in {'EARLY_DEMON_TREND'}:
         score = min(max(score, 55), 72)
+    elif cls['state'] in {'SMART_SHORT_PROBE', 'SHORT_CONFIRMING', 'SHORTS_AS_FUEL'}:
+        score = min(max(score, smart_short['score_floor']), 72)
     elif cls['state'] in {'SECTOR_LAGGARD_OBSERVE'}:
         score = min(score, 65)
     elif cls['state'] in {'EXIT_RISK', 'NO_TRADE_FAKE_OI', 'OI_FAKE_SUSPECT', 'SHORT_TAIL_RISK', 'NO_CHASE_NEGATIVE_FUNDING', 'NO_CHASE_GUILLOTINE', 'NO_TRADE_UNFAIR_GAME'}:
@@ -648,7 +716,7 @@ def score_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     c['score'] = max(0, min(100, round(score)))
     c['reasons'] = reasons
     c['risks'] = risks
-    c['paper_observation_tier'] = 'observe' if c.get('state') in {'EARLY_DEMON_TREND', 'SECTOR_LAGGARD_OBSERVE'} else 'main' if c.get('state') in {'LONG_SQUEEZE', 'LONG_PULLBACK', 'SHORT_BREAKDOWN', 'SHORT_ALERT', 'TREND_ALERT', 'FLASH_CRASH_SHORT'} else 'none'
+    c['paper_observation_tier'] = 'observe' if c.get('state') in {'EARLY_DEMON_TREND', 'SECTOR_LAGGARD_OBSERVE', 'SMART_SHORT_PROBE', 'SHORT_CONFIRMING', 'SHORTS_AS_FUEL'} else 'main' if c.get('state') in {'LONG_SQUEEZE', 'LONG_PULLBACK', 'SHORT_BREAKDOWN', 'SHORT_ALERT', 'TREND_ALERT', 'FLASH_CRASH_SHORT'} else 'none'
     c['thesis_invalidation'] = build_thesis_invalidation(c)
     c['manual_confirmation_required'] = True
     c['allow_trade'] = False

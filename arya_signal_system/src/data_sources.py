@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .historical_metrics import compute_candle_metrics
 from .config import use_coinank_enrichment
+from .pool_selection import extract_social_tickers, select_okx_opportunity_pool
 
 USER_AGENT = 'arya-signal-system/1.0 (Hermes)'
 
@@ -53,68 +54,6 @@ def fetch_okx_tickers(inst_type: str = 'SWAP') -> SourceResult:
         return SourceResult('ok', usdt)
     except Exception as e:
         return SourceResult(f'error:{type(e).__name__}', [])
-
-
-def _ticker_volume_usd(ticker: Dict[str, Any]) -> float:
-    quote = _f(ticker.get('volCcyQuote24h'))
-    if quote:
-        return quote
-    # OKX swap tickers do not always expose volCcyQuote24h consistently.
-    # For preselection we prefer a stable activity proxy over undercounting low-price memes.
-    return _f(ticker.get('volCcy24h'))
-
-
-def _ticker_change_24h_pct(ticker: Dict[str, Any]) -> float:
-    last = _f(ticker.get('last'))
-    open24h = _f(ticker.get('open24h'))
-    return ((last - open24h) / open24h * 100) if last and open24h else 0.0
-
-
-def select_okx_opportunity_pool(
-    instruments: List[dict],
-    tickers: List[dict],
-    *,
-    rank_lookup: Optional[Dict[str, Dict[str, Any]]] = None,
-    limit: int = 30,
-    min_24h_volume_usd: float = 50_000,
-) -> List[Dict[str, Any]]:
-    """Select a dynamic OKX USDT-swap opportunity pool from live market tickers.
-
-    This is a cheap prefilter: it avoids deep OI/book/funding calls for the whole market,
-    while still escaping the old fixed watchlist trap.
-    """
-    rank_lookup = rank_lookup or {}
-    live_ids = {r.get('instId') for r in instruments if str(r.get('instId', '')).endswith('-USDT-SWAP') and r.get('state', 'live') == 'live'}
-    if not live_ids:
-        live_ids = {r.get('instId') for r in tickers if str(r.get('instId', '')).endswith('-USDT-SWAP')}
-    ticker_by_id = {r.get('instId'): r for r in tickers if r.get('instId') in live_ids}
-    rows: List[Dict[str, Any]] = []
-    for inst_id, ticker in ticker_by_id.items():
-        symbol = str(inst_id).replace('-USDT-SWAP', '')
-        volume_usd = _ticker_volume_usd(ticker)
-        if volume_usd < min_24h_volume_usd:
-            continue
-        change_pct = _ticker_change_24h_pct(ticker)
-        rank = rank_lookup.get(symbol, {}).get('binance_hype_rank')
-        hype_bonus = max(0.0, 35.0 - float(rank)) if rank else 0.0
-        meme_bonus = 12.0 if symbol in {'BOME', 'WIF', 'PEPE', 'ORDI', 'DOGE', 'BONK', 'FLOKI', 'SHIB', 'NEIRO'} else 0.0
-        # log10-like volume score without importing math edge cases into tests.
-        volume_score = min(45.0, len(str(int(max(volume_usd, 1)))) * 5.0)
-        volatility_score = min(35.0, abs(change_pct) * 1.5)
-        selection_score = volume_score + volatility_score + hype_bonus + meme_bonus
-        row = {
-            'inst_id': inst_id,
-            'symbol': symbol,
-            'price': _f(ticker.get('last')),
-            'change_24h_pct': round(change_pct, 6),
-            'volume_24h_usd': volume_usd,
-            'selection_score': round(selection_score, 6),
-        }
-        if rank:
-            row['binance_hype_rank'] = rank
-        rows.append(row)
-    rows.sort(key=lambda r: (-float(r.get('selection_score') or 0), -float(r.get('volume_24h_usd') or 0), str(r.get('inst_id'))))
-    return rows[:limit]
 
 
 def fetch_okx_ticker(inst_id: str) -> Dict[str, Any]:
@@ -282,4 +221,3 @@ def load_knowledge_summary(vault_path: str = VAULT_PATH) -> Dict[str, Any]:
             if os.path.exists(p):
                 summary['files'].append(p)
     return summary
-

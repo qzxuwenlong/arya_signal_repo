@@ -172,3 +172,41 @@ def test_build_paper_trade_rows_records_observation_tier_without_main_entry_poll
     assert row['side'] == 'long'
     assert row['early_demon_trend_score'] == 78
     assert row['thesis_invalidation'] == ['1h 跌破启动价 4% 且成交继续放大']
+
+
+def test_build_paper_trade_rows_keeps_smart_short_observation_out_of_main_paper_entries():
+    scan = _scan([
+        {
+            'symbol': 'AXS',
+            'state': 'SMART_SHORT_PROBE',
+            'model': '空头试探观察',
+            'direction': '偏空观察',
+            'strategy': '观察/等待破位与反抽失败确认',
+            'score': 62,
+            'last_price': 1.60,
+            'atr_1h_pct': 4.0,
+            'local_history_ready': True,
+            'paper_observation_tier': 'observe',
+        },
+        {
+            'symbol': 'AXS2',
+            'state': 'SHORT_CONFIRMING',
+            'model': '空头确认中',
+            'direction': '偏空观察',
+            'strategy': '高优先级观察/等待反抽失败',
+            'score': 66,
+            'last_price': 1.55,
+            'atr_1h_pct': 4.0,
+            'local_history_ready': True,
+            'paper_observation_tier': 'observe',
+        },
+    ])
+
+    rows = build_paper_trade_rows(scan, now_ts=1700000500, min_score=50)
+
+    assert len(rows) == 2
+    assert {row['mode'] for row in rows} == {'paper_observation'}
+    assert {row['state'] for row in rows} == {'SMART_SHORT_PROBE', 'SHORT_CONFIRMING'}
+    assert all(row['trade_id'].endswith('-observe') for row in rows)
+    assert all(row['side'] == 'short' for row in rows)
+    assert all(row['order_execution'] == 'disabled' for row in rows)

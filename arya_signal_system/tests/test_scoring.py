@@ -525,6 +525,116 @@ def test_report_renders_state_with_chinese_note():
     assert '负费率诱多，不追多' in report
 
 
+def test_smart_short_probe_marks_negative_funding_oi_price_resilience_as_observation():
+    scored = score_candidate({
+        'symbol': 'AXS',
+        'price_change_1h_pct': 2.99,
+        'volume_change_1h_pct': 5556.56,
+        'oi_change_1h_pct': 1.85,
+        'funding_rate_pct': -0.0806,
+        'long_liq_1h_usd': 0,
+        'short_liq_1h_usd': 0,
+        'depth_usd': 422352,
+        'spread_pct': 0.0062,
+        'signal_persistence_count': 2,
+        'local_history_ready': True,
+    })
+
+    assert scored['state'] == 'SMART_SHORT_PROBE'
+    assert scored['model'] == '空头试探观察'
+    assert scored['direction'] == '偏空观察'
+    assert scored['strategy'] == '观察/等待破位与反抽失败确认'
+    assert scored['paper_observation_tier'] == 'observe'
+    assert scored['allow_trade'] is False
+    assert scored['score'] >= 50
+    assert any('空头试探' in r or '负费率' in r for r in scored['reasons'])
+
+
+def test_short_confirming_requires_prior_probe_breakdown_without_oi_collapse():
+    scored = score_candidate({
+        'symbol': 'AXS',
+        'previous_state': 'SMART_SHORT_PROBE',
+        'price_change_1h_pct': -2.8,
+        'volume_change_1h_pct': 320.0,
+        'oi_change_1h_pct': -1.2,
+        'funding_rate_pct': -0.092,
+        'long_liq_1h_usd': 0,
+        'short_liq_1h_usd': 0,
+        'depth_usd': 430000,
+        'spread_pct': 0.006,
+        'signal_persistence_count': 3,
+        'local_history_ready': True,
+    })
+
+    assert scored['state'] == 'SHORT_CONFIRMING'
+    assert scored['model'] == '空头确认中'
+    assert scored['direction'] == '偏空观察'
+    assert scored['strategy'] == '高优先级观察/等待反抽失败'
+    assert scored['paper_observation_tier'] == 'observe'
+    assert scored['allow_trade'] is False
+    assert scored['score'] >= 55
+
+
+def test_probe_turns_to_shorts_as_fuel_when_price_keeps_holding_up():
+    scored = score_candidate({
+        'symbol': 'AXS',
+        'previous_state': 'SMART_SHORT_PROBE',
+        'price_change_1h_pct': 4.1,
+        'volume_change_1h_pct': 240.0,
+        'oi_change_1h_pct': 3.4,
+        'funding_rate_pct': -0.09,
+        'long_liq_1h_usd': 0,
+        'short_liq_1h_usd': 0,
+        'depth_usd': 470000,
+        'spread_pct': 0.006,
+        'signal_persistence_count': 3,
+        'local_history_ready': True,
+    })
+
+    assert scored['state'] == 'SHORTS_AS_FUEL'
+    assert scored['direction'] == '偏多观察'
+    assert scored['paper_observation_tier'] == 'observe'
+    assert scored['allow_trade'] is False
+
+
+def test_late_negative_funding_oi_collapse_stays_exit_risk_not_short_confirming():
+    scored = score_candidate({
+        'symbol': 'AXS',
+        'previous_state': 'SMART_SHORT_PROBE',
+        'price_change_1h_pct': -7.8,
+        'volume_change_1h_pct': 255.0,
+        'oi_change_1h_pct': -16.5,
+        'funding_rate_pct': -0.1807,
+        'long_liq_1h_usd': 0,
+        'short_liq_1h_usd': 0,
+        'depth_usd': 460000,
+        'spread_pct': 0.006,
+        'local_history_ready': True,
+    })
+
+    assert scored['state'] == 'EXIT_RISK'
+    assert scored['allow_trade'] is False
+    assert scored['paper_observation_tier'] == 'none'
+
+
+def test_report_renders_smart_short_probe_chinese_note():
+    scored = score_candidate({
+        'symbol': 'AXS',
+        'price_change_1h_pct': 2.8,
+        'volume_change_1h_pct': 600.0,
+        'oi_change_1h_pct': 1.2,
+        'funding_rate_pct': -0.07,
+        'depth_usd': 300000,
+        'spread_pct': 0.01,
+        'signal_persistence_count': 2,
+    })
+    report = render_markdown_report([scored])
+
+    assert 'SMART_SHORT_PROBE' in report
+    assert '空头试探观察' in report
+    assert '观察层 observe' in report
+
+
 def test_report_contains_manual_confirmation_and_no_auto_order():
     scored = score_candidate({'symbol':'TEST','score':80,'depth_usd':200000,'spread_pct':0.03,'oi_change_1h_pct':20,'short_liq_1h_usd':100000,'long_liq_1h_usd':1000})
     report = render_markdown_report([scored], source_status={'okx':'ok','binance_web3':'ok','coinank':'missing_key'})

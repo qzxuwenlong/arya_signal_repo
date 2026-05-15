@@ -1,4 +1,10 @@
-from src.data_sources import build_okx_candidate_from_payloads, select_okx_opportunity_pool
+from src.data_sources import (
+    build_okx_candidate_from_payloads,
+)
+from src.pool_selection import (
+    extract_social_tickers,
+    select_okx_opportunity_pool,
+)
 
 
 def _inst(inst_id):
@@ -48,6 +54,71 @@ def test_select_okx_opportunity_pool_can_fallback_to_tickers_when_instruments_fa
     pool = select_okx_opportunity_pool([], tickers, limit=1)
 
     assert [x['inst_id'] for x in pool] == ['BOME-USDT-SWAP']
+
+
+def test_select_okx_opportunity_pool_boosts_social_mentions_with_aliases():
+    instruments = [_inst('HYPE-USDT-SWAP'), _inst('AXS-USDT-SWAP'), _inst('BTC-USDT-SWAP')]
+    tickers = [
+        _ticker('HYPE-USDT-SWAP', 30, 30, 20_000),
+        _ticker('AXS-USDT-SWAP', 3, 3, 20_000),
+        _ticker('BTC-USDT-SWAP', 100000, 100000, 1_000_000),
+    ]
+    social_lookup = {
+        'HYPE': {'social_mention_count': 2, 'social_aliases': ['HYPER']},
+        'AXS': {'social_mention_count': 1},
+    }
+
+    pool = select_okx_opportunity_pool(
+        instruments,
+        tickers,
+        social_lookup=social_lookup,
+        limit=2,
+        min_24h_volume_usd=50_000,
+    )
+
+    assert [x['inst_id'] for x in pool] == ['HYPE-USDT-SWAP', 'AXS-USDT-SWAP']
+    assert pool[0]['social_mention_count'] == 2
+    assert pool[1]['social_mention_count'] == 1
+
+
+def test_select_okx_opportunity_pool_boosts_onchain_candidates_without_social_dependency():
+    instruments = [_inst('HYPE-USDT-SWAP'), _inst('AXS-USDT-SWAP'), _inst('BTC-USDT-SWAP')]
+    tickers = [
+        _ticker('HYPE-USDT-SWAP', 30, 30, 20_000),
+        _ticker('AXS-USDT-SWAP', 3, 3, 20_000),
+        _ticker('BTC-USDT-SWAP', 100000, 100000, 1_000_000),
+    ]
+    onchain_lookup = {
+        'HYPE': {'onchain_observation_score': 43, 'onchain_sources': ['trending', 'smart_money']},
+        'AXS': {'onchain_observation_score': 31, 'onchain_sources': ['trending']},
+    }
+
+    pool = select_okx_opportunity_pool(
+        instruments,
+        tickers,
+        onchain_lookup=onchain_lookup,
+        limit=2,
+        min_24h_volume_usd=50_000,
+    )
+
+    assert [x['inst_id'] for x in pool] == ['HYPE-USDT-SWAP', 'AXS-USDT-SWAP']
+    assert pool[0]['onchain_observation_score'] == 43
+    assert pool[0]['onchain_sources'] == ['trending', 'smart_money']
+    assert pool[1]['onchain_observation_score'] == 31
+
+
+def test_extract_social_tickers_recognizes_cashtags_lowercase_and_hyper_alias():
+    tweets = [
+        {'text': '$hyper 负费率拉满，OI 在增加'},
+        {'text': '$AXS 这个多空比还不错'},
+        {'text': 'hype 还能看，但不是开仓信号'},
+    ]
+
+    lookup = extract_social_tickers(tweets, symbol_aliases={'HYPER': 'HYPE'}, allowed_symbols={'HYPE', 'AXS'})
+
+    assert lookup['HYPE']['social_mention_count'] == 2
+    assert lookup['HYPE']['social_aliases'] == ['HYPER']
+    assert lookup['AXS']['social_mention_count'] == 1
 
 
 def test_build_okx_candidate_from_payloads_records_volume_1h_usd():

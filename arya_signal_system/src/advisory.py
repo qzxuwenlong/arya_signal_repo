@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 ACTIONABLE_STATES = {'LONG_SQUEEZE', 'SQUEEZE_ACTIVE', 'LONG_PULLBACK', 'SHORT_BREAKDOWN', 'SHORT_ALERT', 'TREND_ALERT'}
+OBSERVATION_ALERT_STATES = {'SMART_SHORT_PROBE', 'SHORT_CONFIRMING', 'SHORTS_AS_FUEL'}
+ONCHAIN_OBSERVATION_STATE = 'ONCHAIN_OBSERVE'
 SEVERE_EXIT_RISK_KEYWORDS = ('资金费率极端', '收网风险', '熔断', '退出')
 
 
@@ -28,17 +30,45 @@ def _has_severe_exit_risk(candidate: Dict[str, Any]) -> bool:
     return any(k in risks for k in SEVERE_EXIT_RISK_KEYWORDS)
 
 
-def select_alert_candidates(candidates: Iterable[Dict[str, Any]], *, min_score: int = 50, include_severe_exit: bool = True) -> List[Dict[str, Any]]:
+def select_alert_candidates(candidates: Iterable[Dict[str, Any]], *, min_score: int = 50, include_severe_exit: bool = True, include_observations: bool = False) -> List[Dict[str, Any]]:
     selected: List[Dict[str, Any]] = []
     for c in candidates:
         state = c.get('state')
         score = _num(c.get('score'))
         history_ready = c.get('local_history_ready', True)
         if state in ACTIONABLE_STATES and score >= min_score and history_ready:
-            selected.append(dict(c))
+            row = dict(c)
+            row.setdefault('alert_tier', 'actionable')
+            selected.append(row)
+        elif include_observations and state in OBSERVATION_ALERT_STATES and score >= min_score and history_ready and c.get('paper_observation_tier') == 'observe':
+            row = dict(c)
+            row['alert_tier'] = 'observation'
+            selected.append(row)
         elif include_severe_exit and _has_severe_exit_risk(c):
-            selected.append(dict(c))
+            row = dict(c)
+            row.setdefault('alert_tier', 'risk')
+            selected.append(row)
     return sorted(selected, key=lambda x: (_num(x.get('score')), abs(_num(x.get('funding_rate_pct')))), reverse=True)
+
+
+def select_onchain_observation_candidates(candidates: Iterable[Dict[str, Any]], *, min_score: int = 20) -> List[Dict[str, Any]]:
+    selected: List[Dict[str, Any]] = []
+    for c in candidates:
+        if c.get('state') != ONCHAIN_OBSERVATION_STATE:
+            continue
+        if c.get('tier') != 'C_ONCHAIN_OBSERVE':
+            continue
+        if c.get('allow_trade') is not False:
+            continue
+        if c.get('paper_observation_tier') != 'observe':
+            continue
+        if _num(c.get('score')) < min_score:
+            continue
+        row = dict(c)
+        row['alert_tier'] = 'onchain_observation'
+        row['allow_trade'] = False
+        selected.append(row)
+    return sorted(selected, key=lambda x: (_num(x.get('score')), _num(x.get('smart_money_amount_usd')), -_num(x.get('onchain_trending_rank'), 999)), reverse=True)
 
 
 def build_advisory_message(candidates: Iterable[Dict[str, Any]], *, source_status: Dict[str, str] | None = None, title: str = 'Arya 交易建议提醒') -> str:
@@ -67,6 +97,13 @@ def build_advisory_message(candidates: Iterable[Dict[str, Any]], *, source_statu
             lines.append('- 证据：' + '；'.join(str(x) for x in reasons[:3]))
         if risks:
             lines.append('- 风险：' + '；'.join(str(x) for x in risks[:3]))
+        if c.get('alert_tier') == 'observation':
+            lines.append('- 观察层：这是早期结构提醒，不是开仓信号；只记录 paper_observation，等待破位/反抽失败/盘口卖压确认。')
+        if c.get('alert_tier') == 'onchain_observation':
+            lines.append(
+                f'- C档链上观察：链 {c.get("chain", "unknown")}｜来源 {",".join(str(x) for x in c.get("source", [])[:3])}｜趋势 #{c.get("onchain_trending_rank", "-")}｜聪明钱 {int(_num(c.get("smart_money_signal_count")))} 笔/${_num(c.get("smart_money_amount_usd")):.0f}'
+            )
+            lines.append('- 观察层：OnchainOS 只做前置发现/聪明钱确认/安全过滤，不是开仓信号；OKX 合约结构未确认前不进主 paper entries。')
         lines.append('- 执行：等待人工确认，不自动下单。')
         lines.append('')
     return '\n'.join(lines).strip()
@@ -76,9 +113,33 @@ def load_scan(path: str | Path) -> Dict[str, Any]:
     return json.loads(Path(path).read_text(encoding='utf-8'))
 
 
-def build_from_scan(scan: Dict[str, Any], *, min_score: int = 50, include_severe_exit: bool = True) -> Dict[str, Any]:
-    selected = select_alert_candidates(scan.get('candidates') or [], min_score=min_score, include_severe_exit=include_severe_exit)
-    message = build_advisory_message(selected, source_status=scan.get('source_status') or {})
+def build_from_scan(
+    scan: Dict[str, Any],
+    *,
+    min_score: int = 50,
+    include_severe_exit: bool = True,
+    include_observations: bool = False,
+    include_onchain_observations: bool = False,
+    min_onchain_score: int = 20,
+) -> Dict[str, Any]:
+    selected = select_alert_candidates(
+        scan.get('candidates') or [],
+        min_score=min_score,
+        include_severe_exit=include_severe_exit,
+        include_observations=include_observations,
+    )
+    if include_onchain_observations:
+        pool = scan.get('onchain_observation_pool') or {}
+        selected.extend(select_onchain_observation_candidates(pool.get('candidates') or [], min_score=min_onchain_score))
+    has_only_observations = bool(selected) and all(c.get('alert_tier') == 'observation' for c in selected)
+    has_only_onchain = bool(selected) and all(c.get('alert_tier') == 'onchain_observation' for c in selected)
+    if has_only_onchain:
+        title = 'Arya 链上观察提醒'
+    elif has_only_observations:
+        title = 'Arya 观察提醒'
+    else:
+        title = 'Arya 交易建议提醒'
+    message = build_advisory_message(selected, source_status=scan.get('source_status') or {}, title=title)
     return {'selected': selected, 'message': message, 'should_notify': bool(selected)}
 
 
@@ -88,11 +149,21 @@ def main() -> None:
     ap.add_argument('--out', default='runs/latest_advisory.md')
     ap.add_argument('--min-score', type=int, default=50)
     ap.add_argument('--include-severe-exit', action='store_true')
+    ap.add_argument('--include-observations', action='store_true')
+    ap.add_argument('--include-onchain-observations', action='store_true')
+    ap.add_argument('--min-onchain-score', type=int, default=20)
     ap.add_argument('--print-empty', action='store_true')
     args = ap.parse_args()
 
     scan = load_scan(args.scan_json)
-    result = build_from_scan(scan, min_score=args.min_score, include_severe_exit=args.include_severe_exit)
+    result = build_from_scan(
+        scan,
+        min_score=args.min_score,
+        include_severe_exit=args.include_severe_exit,
+        include_observations=args.include_observations,
+        include_onchain_observations=args.include_onchain_observations,
+        min_onchain_score=args.min_onchain_score,
+    )
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(result['message'], encoding='utf-8')
